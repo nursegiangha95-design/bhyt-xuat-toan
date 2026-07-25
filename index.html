@@ -47,8 +47,9 @@ const qKey = (q, y) => `${q}-${y}`;
 
 let state = {
   user: null, role: 'viewer',
-  categories: [], periods: [], details: [],
+  categories: [], periods: [], details: [], reference: [],
   tab: 'overview', quarterFilter: 'ALL',
+  refSearch: '', refGroup: 'ALL', refExpanded: new Set(),
   chartRef: null,
 };
 
@@ -132,14 +133,16 @@ async function logout() {
 // DATA LOADING
 // ---------------------------------------------------------------
 async function loadAll() {
-  const [{ data: cats }, { data: pers }, { data: dets }] = await Promise.all([
+  const [{ data: cats }, { data: pers }, { data: dets }, { data: refs }] = await Promise.all([
     sb.from('bhyt_categories').select('*').order('code'),
     sb.from('bhyt_periods').select('*').order('year').order('quarter'),
     sb.from('bhyt_details').select('*'),
+    sb.from('bhyt_reference').select('*').order('phu_luc').order('stt'),
   ]);
   state.categories = cats || [];
   state.periods = pers || [];
   state.details = dets || [];
+  state.reference = refs || [];
 }
 
 // ---------------------------------------------------------------
@@ -211,6 +214,7 @@ function render() {
         ${tabBtn('overview', 'Tổng quan')}
         ${tabBtn('details', 'Chi tiết xuất toán')}
         ${tabBtn('setup', 'Kỳ & Danh mục')}
+        ${tabBtn('reference', 'Tra cứu chuyên đề')}
         ${tabBtn('guide', 'Hướng dẫn')}
       </div>
     </div>
@@ -235,6 +239,7 @@ function renderTab() {
   if (state.tab === 'overview') el.innerHTML = overviewHTML();
   if (state.tab === 'details') el.innerHTML = detailsHTML();
   if (state.tab === 'setup') el.innerHTML = setupHTML();
+  if (state.tab === 'reference') el.innerHTML = referenceHTML();
   if (state.tab === 'guide') el.innerHTML = guideHTML();
   attachTabEvents();
   if (state.tab === 'overview') drawChart();
@@ -421,8 +426,64 @@ function setupHTML() {
 }
 
 // ---------------------------------------------------------------
-// GUIDE TAB
+// REFERENCE TAB (tra cứu chuyên đề giám định BHYT chính thức)
 // ---------------------------------------------------------------
+const PHU_LUC_LABELS = {
+  'KHÁM': 'PL1 · Tiền khám', 'GIƯỜNG': 'PL2 · Tiền giường', 'DVKT': 'PL3 · Dịch vụ kỹ thuật',
+  'PTTT': 'PL4 · Phẫu thuật thủ thuật', 'CĐHA': 'PL5 · Chẩn đoán hình ảnh', 'XÉT NGHIỆM': 'PL6 · Xét nghiệm',
+  'THUỐC': 'PL7 · Thuốc', 'VTYT': 'PL8 · Vật tư y tế', 'DỮ LIỆU, THỦ TỤC HC': 'PL9 · Dữ liệu, thủ tục HC',
+};
+function escapeHtml(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function nl2br(s) { return escapeHtml(s).replace(/\n/g, '<br/>'); }
+
+function referenceHTML() {
+  const groups = Array.from(new Set(state.reference.map((r) => r.phu_luc)));
+  const q = state.refSearch.trim().toLowerCase();
+  let rows = state.reference;
+  if (state.refGroup !== 'ALL') rows = rows.filter((r) => r.phu_luc === state.refGroup);
+  if (q) rows = rows.filter((r) => [r.name, r.category_group, r.legal_basis, r.payment_basis, r.audit_rule].some((f) => (f || '').toLowerCase().includes(q)));
+
+  return `
+    <div class="mb-4">
+      <p class="text-sm text-slate-500 mb-3">Tra cứu ${state.reference.length} chuyên đề giám định BHYT chính thức (Phụ lục 1–9) — cơ sở pháp lý, cơ sở thanh toán và quy tắc giám định để tham khảo khi giải trình.</p>
+      <div class="flex flex-wrap gap-2 items-center">
+        <input id="ref-search" type="text" placeholder="Tìm theo tên chuyên đề, cơ sở pháp lý, quy tắc..." value="${escapeHtml(state.refSearch)}" class="border border-slate-300 rounded-md px-3 py-2 text-sm flex-1 min-w-[240px]" />
+        <select id="ref-group" class="border border-slate-300 rounded-md px-2 py-2 text-sm bg-white">
+          <option value="ALL" ${state.refGroup === 'ALL' ? 'selected' : ''}>Tất cả phụ lục</option>
+          ${groups.map((g) => `<option value="${escapeHtml(g)}" ${state.refGroup === g ? 'selected' : ''}>${escapeHtml(PHU_LUC_LABELS[g] || g)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="text-xs text-slate-400 mb-2">${rows.length} kết quả</div>
+    <div class="space-y-2">
+      ${rows.length === 0 ? '<div class="text-sm text-slate-400 py-10 text-center bg-white border border-slate-200 rounded-lg">Không tìm thấy chuyên đề phù hợp</div>' : rows.map(refItemHTML).join('')}
+    </div>
+  `;
+}
+
+function refItemHTML(r) {
+  const expanded = state.refExpanded.has(String(r.id));
+  return `
+    <div class="bg-white border border-slate-200 rounded-lg overflow-hidden">
+      <button data-ref-toggle="${r.id}" class="w-full text-left px-4 py-3 flex items-start justify-between gap-3 hover:bg-slate-50">
+        <div>
+          <span class="text-[11px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5 mr-2">${escapeHtml(PHU_LUC_LABELS[r.phu_luc] || r.phu_luc)}</span>
+          <span class="text-sm font-medium text-slate-800">${escapeHtml(r.name)}</span>
+        </div>
+        <span class="text-slate-400 text-sm shrink-0">${expanded ? '▲' : '▼'}</span>
+      </button>
+      ${expanded ? `
+        <div class="px-4 pb-4 pt-1 border-t border-slate-100 space-y-3 text-sm">
+          ${r.legal_basis ? `<div><div class="text-xs font-semibold text-slate-500 uppercase mb-1">Cơ sở pháp lý</div><div class="text-slate-700 whitespace-pre-line">${nl2br(r.legal_basis)}</div></div>` : ''}
+          ${r.payment_basis ? `<div><div class="text-xs font-semibold text-slate-500 uppercase mb-1">Cơ sở thanh toán</div><div class="text-slate-700 whitespace-pre-line">${nl2br(r.payment_basis)}</div></div>` : ''}
+          ${r.audit_rule ? `<div><div class="text-xs font-semibold text-slate-500 uppercase mb-1">Quy tắc giám định</div><div class="text-slate-700 whitespace-pre-line">${nl2br(r.audit_rule)}</div></div>` : ''}
+        </div>` : ''}
+    </div>`;
+}
+
+
 function guideSection(title, items) {
   return `
     <div class="bg-white border border-slate-200 rounded-lg p-4">
@@ -498,6 +559,22 @@ function attachTabEvents() {
       tr.querySelectorAll('[data-field]').forEach((input) => input.addEventListener('change', () => saveCategoryField(tr.dataset.code, input.dataset.field, input.value)));
       const delBtn = tr.querySelector('[data-del-category]');
       if (delBtn) delBtn.onclick = () => deleteCategory(tr.dataset.code);
+    });
+  }
+  if (state.tab === 'reference') {
+    const searchEl = document.getElementById('ref-search');
+    if (searchEl) {
+      searchEl.addEventListener('input', (e) => { state.refSearch = e.target.value; renderTab(); });
+      const val = searchEl.value; searchEl.focus(); searchEl.value = ''; searchEl.value = val;
+    }
+    const groupEl = document.getElementById('ref-group');
+    if (groupEl) groupEl.onchange = (e) => { state.refGroup = e.target.value; renderTab(); };
+    document.querySelectorAll('[data-ref-toggle]').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.dataset.refToggle;
+        if (state.refExpanded.has(id)) state.refExpanded.delete(id); else state.refExpanded.add(id);
+        renderTab();
+      };
     });
   }
 }
