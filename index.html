@@ -23,14 +23,14 @@
      Postgres Row Level Security (đã chạy ở bhyt_schema.sql) quyết định.
      ============================================================ -->
 <script>
-  const SUPABASE_URL = 'https://gkzdfbgqclmrnkktvuke.supabase.co/rest/v1/';
-  const SUPABASE_ANON_KEY = 'sb_publishable_zbu8SZGXpzAicdkVoxXRwQ_0_6bsIUl';
+  const SUPABASE_URL = 'https://YOUR-PROJECT-REF.supabase.co';
+  const SUPABASE_ANON_KEY = 'YOUR-ANON-PUBLIC-KEY';
 </script>
 
 <div id="app" class="min-h-screen"></div>
 
 <script>
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const QUARTERS = ['Q1', 'Q2', 'Q3', 'Q4'];
 const STATUS_OPTIONS = ['Đang giải trình', 'Đã giải trình thành công', 'Đã giải trình một phần', 'Đã giải trình thất bại'];
 const STATUS_CLASS = {
@@ -67,9 +67,9 @@ async function init() {
     return;
   }
   try {
-    const { data: { session } } = await supabase.auth.getSession();
+    const { data: { session } } = await sb.auth.getSession();
     if (session) { await afterLogin(session); } else { renderLogin(); }
-    supabase.auth.onAuthStateChange((event, session) => {
+    sb.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT') renderLogin();
     });
   } catch (e) {
@@ -109,7 +109,7 @@ function renderLogin(errorMsg) {
     e.preventDefault();
     const email = document.getElementById('login-email').value.trim();
     const password = document.getElementById('login-password').value;
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
     if (error) { renderLogin('Sai email hoặc mật khẩu.'); return; }
     await afterLogin(data.session);
   });
@@ -117,14 +117,14 @@ function renderLogin(errorMsg) {
 
 async function afterLogin(session) {
   state.user = session.user;
-  const { data: profile } = await supabase.from('bhyt_user_profiles').select('role').eq('id', session.user.id).single();
+  const { data: profile } = await sb.from('bhyt_user_profiles').select('role').eq('id', session.user.id).single();
   state.role = profile?.role || 'viewer';
   await loadAll();
   render();
 }
 
 async function logout() {
-  await supabase.auth.signOut();
+  await sb.auth.signOut();
   state = { user: null, role: 'viewer', categories: [], periods: [], details: [], tab: 'overview', quarterFilter: 'ALL' };
 }
 
@@ -133,9 +133,9 @@ async function logout() {
 // ---------------------------------------------------------------
 async function loadAll() {
   const [{ data: cats }, { data: pers }, { data: dets }] = await Promise.all([
-    supabase.from('bhyt_categories').select('*').order('code'),
-    supabase.from('bhyt_periods').select('*').order('year').order('quarter'),
-    supabase.from('bhyt_details').select('*'),
+    sb.from('bhyt_categories').select('*').order('code'),
+    sb.from('bhyt_periods').select('*').order('year').order('quarter'),
+    sb.from('bhyt_details').select('*'),
   ]);
   state.categories = cats || [];
   state.periods = pers || [];
@@ -458,45 +458,45 @@ function attachTabEvents() {
 async function saveDetailField(id, field, value) {
   const numeric = ['year', 'notified', 'finalized', 'notified_cost', 'finalized_cost'];
   const patch = { [field]: numeric.includes(field) ? Number(value) : value };
-  await supabase.from('bhyt_details').update(patch).eq('id', id);
+  await sb.from('bhyt_details').update(patch).eq('id', id);
   const row = state.details.find((d) => String(d.id) === String(id));
   if (row) Object.assign(row, patch);
 }
 async function deleteDetailRow(id) {
-  await supabase.from('bhyt_details').delete().eq('id', id);
+  await sb.from('bhyt_details').delete().eq('id', id);
   state.details = state.details.filter((d) => String(d.id) !== String(id));
   renderTab();
 }
 async function addDetailRow() {
   const payload = { quarter: 'Q1', year: new Date().getFullYear(), code: state.categories[0]?.code || null, notified: 0, finalized: 0, notified_cost: 0, finalized_cost: 0, status: STATUS_OPTIONS[0], note: '' };
-  const { data, error } = await supabase.from('bhyt_details').insert(payload).select().single();
+  const { data, error } = await sb.from('bhyt_details').insert(payload).select().single();
   if (!error) { state.details.push(data); renderTab(); }
 }
 
 async function savePeriodField(id, field, value) {
   const patch = { [field]: field === 'quarter' ? value : Number(value) };
-  await supabase.from('bhyt_periods').update(patch).eq('id', id);
+  await sb.from('bhyt_periods').update(patch).eq('id', id);
   const row = state.periods.find((p) => String(p.id) === String(id));
   if (row) Object.assign(row, patch);
 }
 async function deletePeriod(id) {
-  await supabase.from('bhyt_periods').delete().eq('id', id);
+  await sb.from('bhyt_periods').delete().eq('id', id);
   state.periods = state.periods.filter((p) => String(p.id) !== String(id));
   renderTab();
 }
 async function addPeriodRow() {
   const payload = { quarter: 'Q1', year: new Date().getFullYear(), revenue: 0 };
-  const { data, error } = await supabase.from('bhyt_periods').insert(payload).select().single();
+  const { data, error } = await sb.from('bhyt_periods').insert(payload).select().single();
   if (!error) { state.periods.push(data); renderTab(); }
 }
 
 async function saveCategoryField(code, field, value) {
-  await supabase.from('bhyt_categories').update({ [field]: value }).eq('code', code);
+  await sb.from('bhyt_categories').update({ [field]: value }).eq('code', code);
   const row = state.categories.find((c) => c.code === code);
   if (row) row[field] = value;
 }
 async function deleteCategory(code) {
-  await supabase.from('bhyt_categories').delete().eq('code', code);
+  await sb.from('bhyt_categories').delete().eq('code', code);
   state.categories = state.categories.filter((c) => c.code !== code);
   renderTab();
 }
@@ -504,7 +504,7 @@ async function quickAddCategory() {
   const input = document.getElementById('new-cat-code');
   const code = input.value.trim();
   if (!code) return;
-  const { data, error } = await supabase.from('bhyt_categories').insert({ code, name: '', category_group: '' }).select().single();
+  const { data, error } = await sb.from('bhyt_categories').insert({ code, name: '', category_group: '' }).select().single();
   if (!error) { state.categories.push(data); renderTab(); }
 }
 
@@ -535,9 +535,9 @@ async function handleImport(e) {
       }))
       .filter((r) => r.quarter && r.year && r.code);
 
-    if (cats.length) await supabase.from('bhyt_categories').upsert(cats, { onConflict: 'code' });
-    if (pers.length) await supabase.from('bhyt_periods').upsert(pers, { onConflict: 'quarter,year' });
-    if (dets.length) await supabase.from('bhyt_details').upsert(dets, { onConflict: 'quarter,year,code' });
+    if (cats.length) await sb.from('bhyt_categories').upsert(cats, { onConflict: 'code' });
+    if (pers.length) await sb.from('bhyt_periods').upsert(pers, { onConflict: 'quarter,year' });
+    if (dets.length) await sb.from('bhyt_details').upsert(dets, { onConflict: 'quarter,year,code' });
 
     await loadAll();
     msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md px-3 py-2 text-sm">Đã cộng dồn: ${pers.length} kỳ, ${cats.length} chuyên đề, ${dets.length} dòng chi tiết.</div></div>`;
