@@ -23,8 +23,8 @@
      Postgres Row Level Security (đã chạy ở bhyt_schema.sql) quyết định.
      ============================================================ -->
 <script>
-  const SUPABASE_URL = 'https://gkzdfbgqclmrnkktvuke.supabase.co';
-  const SUPABASE_ANON_KEY = 'sb_publishable_zbu8SZGXpzAicdkVoxXRwQ_0_6bsIUl';
+  const SUPABASE_URL = 'https://YOUR-PROJECT-REF.supabase.co';
+  const SUPABASE_ANON_KEY = 'YOUR-ANON-PUBLIC-KEY';
 </script>
 
 <div id="app" class="min-h-screen"></div>
@@ -211,6 +211,7 @@ function render() {
         ${tabBtn('overview', 'Tổng quan')}
         ${tabBtn('details', 'Chi tiết xuất toán')}
         ${tabBtn('setup', 'Kỳ & Danh mục')}
+        ${tabBtn('guide', 'Hướng dẫn')}
       </div>
     </div>
     <div id="import-msg"></div>
@@ -234,6 +235,7 @@ function renderTab() {
   if (state.tab === 'overview') el.innerHTML = overviewHTML();
   if (state.tab === 'details') el.innerHTML = detailsHTML();
   if (state.tab === 'setup') el.innerHTML = setupHTML();
+  if (state.tab === 'guide') el.innerHTML = guideHTML();
   attachTabEvents();
   if (state.tab === 'overview') drawChart();
 }
@@ -419,8 +421,53 @@ function setupHTML() {
 }
 
 // ---------------------------------------------------------------
-// EVENT WIRING + SUPABASE WRITES
+// GUIDE TAB
 // ---------------------------------------------------------------
+function guideSection(title, items) {
+  return `
+    <div class="bg-white border border-slate-200 rounded-lg p-4">
+      <h3 class="text-sm font-semibold text-blue-900 mb-2">${title}</h3>
+      <div class="space-y-1.5 text-sm text-slate-700">${items.map((i) => `<p>${i}</p>`).join('')}</div>
+    </div>`;
+}
+
+function guideHTML() {
+  return `
+    <div class="max-w-3xl space-y-5">
+      <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <h2 class="text-base font-semibold text-blue-900 mb-1">BẢNG THEO DÕI XUẤT TOÁN BHYT THEO CHUYÊN ĐỀ</h2>
+        <p class="text-sm text-blue-800">Hướng dẫn nhanh cách dùng dashboard này.</p>
+      </div>
+
+      ${guideSection('1. Cấu trúc các tab', [
+        '<b>Tổng quan</b>: thẻ số liệu tổng hợp, biểu đồ chi phí xuất toán theo quý, bảng chuyên đề lặp lại nhiều nhất và luỹ kế chi phí xuất toán cao nhất — tất cả tự động tính, không cần nhập tay.',
+        '<b>Chi tiết xuất toán</b>: bảng nhập liệu chính, mỗi dòng = 1 chuyên đề bị giám định trong 1 quý.',
+        '<b>Kỳ &amp; Danh mục</b>: khai báo các quý (kèm tổng doanh thu BHYT) và danh mục mã chuyên đề (thêm mã mới khi BHYT ban hành thêm).',
+      ])}
+
+      ${guideSection('2. Vai trò &amp; quyền chỉnh sửa', [
+        '<b>Editor (được sửa)</b>: thấy đầy đủ ô nhập liệu, nút Thêm/Xoá dòng, và nút Import Excel.',
+        '<b>Viewer (chỉ xem)</b>: xem toàn bộ số liệu và biểu đồ, Export Excel được, nhưng mọi ô nhập liệu bị khoá xám, không có nút Thêm/Xoá/Import.',
+        'Muốn đổi vai trò cho ai đó, quản trị viên vào Supabase Dashboard → bảng <code class="bg-white border border-slate-200 rounded px-1">bhyt_user_profiles</code> → sửa cột role.',
+      ])}
+
+      ${guideSection('3. Cách tính các tỉ lệ (tab Tổng quan)', [
+        '- Tỉ lệ xuất toán/doanh thu quý = Tổng chi phí xuất toán quý ÷ Tổng doanh thu BHYT quý',
+        '- Tỉ lệ giải trình thành công (theo hồ sơ) = (Số thông báo − Số xuất toán) ÷ Số thông báo',
+        '- Tỉ lệ giải trình thành công (theo tiền) = (Chi phí thông báo − Chi phí xuất toán) ÷ Chi phí thông báo',
+        '- Số quý xuất hiện = số quý mà mã chuyên đề đó bị nhắc tới trong "Chi tiết xuất toán" (đếm lặp lại)',
+        '- Luỹ kế chi phí xuất toán = tổng chi phí xuất toán của mã đó, cộng dồn qua tất cả các quý đã nhập',
+      ])}
+
+      ${guideSection('4. Import / Export Excel', [
+        'Nút <b>Import Excel</b> (chỉ Editor thấy) đọc đúng 3 sheet: "Danh mục chuyên đề", "Kỳ giám định", "Chi tiết xuất toán" từ file mẫu đã thống nhất.',
+        'Dữ liệu import sẽ <b>cộng dồn</b> với dữ liệu đang có trên dashboard (theo Quý-Năm-Mã), không thay thế toàn bộ — trùng thì cập nhật đè, không trùng thì thêm mới.',
+        'Nút <b>Export Excel</b> xuất ngược lại đúng 3 sheet đó để lưu hoặc đối chiếu ở Excel.',
+      ])}
+    </div>`;
+}
+
+
 function attachTabEvents() {
   if (state.tab === 'details') {
     const filterEl = document.getElementById('quarter-filter');
