@@ -23,8 +23,8 @@
      Postgres Row Level Security (đã chạy ở bhyt_schema.sql) quyết định.
      ============================================================ -->
 <script>
-  const SUPABASE_URL = 'https://gkzdfbgqclmrnkktvuke.supabase.co';
-  const SUPABASE_ANON_KEY = 'sb_publishable_zbu8SZGXpzAicdkVoxXRwQ_0_6bsIUl';
+  const SUPABASE_URL = 'https://YOUR-PROJECT-REF.supabase.co';
+  const SUPABASE_ANON_KEY = 'YOUR-ANON-PUBLIC-KEY';
 </script>
 
 <div id="app" class="min-h-screen"></div>
@@ -53,6 +53,7 @@ let state = {
   refSearch: '', refGroup: 'ALL', refExpanded: new Set(),
   dashYear: 'ALL', dashQuarter: 'ALL', paretoScope: 'filtered',
   deptExpanded: new Set(),
+  showPwBox: false, pwMsg: null,
   chartRef: null, trendChartRef: null, paretoCostChartRef: null, paretoCountChartRef: null,
 };
 
@@ -124,6 +125,17 @@ async function afterLogin(session) {
   const { data: profile } = await sb.from('bhyt_user_profiles').select('role').eq('id', session.user.id).single();
   state.role = profile?.role || 'viewer';
   await loadAll();
+  render();
+}
+
+async function handleChangePassword() {
+  const newPw = document.getElementById('pw-new').value;
+  const confirmPw = document.getElementById('pw-confirm').value;
+  if (newPw.length < 6) { state.pwMsg = { ok: false, text: 'Mật khẩu phải có ít nhất 6 ký tự.' }; render(); return; }
+  if (newPw !== confirmPw) { state.pwMsg = { ok: false, text: 'Hai mật khẩu nhập không khớp nhau.' }; render(); return; }
+  const { error } = await sb.auth.updateUser({ password: newPw });
+  if (error) { state.pwMsg = { ok: false, text: 'Lỗi: ' + error.message }; render(); return; }
+  state.pwMsg = { ok: true, text: 'Đổi mật khẩu thành công.' };
   render();
 }
 
@@ -295,6 +307,18 @@ function render() {
           ${canEdit ? `<input type="file" id="import-file" accept=".xlsx,.xls" class="hidden" />
           <button id="btn-import" class="bg-blue-800 hover:bg-blue-700 border border-blue-600 rounded-md px-3 py-2 text-sm font-medium">Import Excel</button>` : ''}
           <button id="btn-export" class="bg-white text-blue-900 hover:bg-blue-50 rounded-md px-3 py-2 text-sm font-medium">Export Excel</button>
+          <div class="relative">
+            <button id="btn-change-pw" class="border border-blue-600 rounded-md px-3 py-2 text-sm font-medium text-blue-100 hover:bg-blue-800">Đổi mật khẩu</button>
+            ${state.showPwBox ? `
+              <div class="absolute right-0 mt-2 bg-white text-slate-800 rounded-md shadow-lg border border-slate-200 p-3 w-64 z-20">
+                <label class="text-xs text-slate-500">Mật khẩu mới (tối thiểu 6 ký tự)</label>
+                <input id="pw-new" type="password" class="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
+                <label class="text-xs text-slate-500 mt-2 block">Nhập lại mật khẩu mới</label>
+                <input id="pw-confirm" type="password" class="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
+                ${state.pwMsg ? `<div class="text-xs mt-2 ${state.pwMsg.ok ? 'text-emerald-600' : 'text-red-600'}">${escapeHtml(state.pwMsg.text)}</div>` : ''}
+                <button id="btn-pw-submit" class="mt-2 w-full bg-blue-900 text-white rounded py-1.5 text-sm font-medium hover:bg-blue-800">Đổi mật khẩu</button>
+              </div>` : ''}
+          </div>
           <button id="btn-logout" class="border border-blue-600 rounded-md px-3 py-2 text-sm font-medium text-blue-100 hover:bg-blue-800">Đăng xuất</button>
         </div>
       </div>
@@ -312,6 +336,9 @@ function render() {
   `;
   document.getElementById('btn-logout').onclick = async () => { await logout(); };
   document.getElementById('btn-export').onclick = handleExport;
+  document.getElementById('btn-change-pw').onclick = () => { state.showPwBox = !state.showPwBox; state.pwMsg = null; render(); };
+  const pwSubmitBtn = document.getElementById('btn-pw-submit');
+  if (pwSubmitBtn) pwSubmitBtn.onclick = handleChangePassword;
   if (canEdit) document.getElementById('btn-import').onclick = () => document.getElementById('import-file').click();
   if (canEdit) document.getElementById('import-file').addEventListener('change', handleImport);
   document.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => { state.tab = b.dataset.tab; render(); });
