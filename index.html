@@ -50,7 +50,8 @@ let state = {
   categories: [], periods: [], details: [], reference: [],
   tab: 'overview', quarterFilter: 'ALL',
   refSearch: '', refGroup: 'ALL', refExpanded: new Set(),
-  chartRef: null,
+  dashYear: 'ALL', dashQuarter: 'ALL', paretoScope: 'filtered',
+  chartRef: null, trendChartRef: null, paretoCostChartRef: null, paretoCountChartRef: null,
 };
 
 // ---------------------------------------------------------------
@@ -181,14 +182,75 @@ function grandTotal(qs) {
 
 function categorySummaries() {
   const byCode = new Map();
-  state.categories.forEach((c) => byCode.set(c.code, { code: c.code, name: c.name, quarterCount: 0, finalizedCost: 0 }));
+  state.categories.forEach((c) => byCode.set(c.code, { code: c.code, name: c.name, quarterCount: 0, finalizedCost: 0, finalized: 0 }));
   state.details.forEach((d) => {
-    if (!byCode.has(d.code)) byCode.set(d.code, { code: d.code, name: '(chưa khai báo)', quarterCount: 0, finalizedCost: 0 });
+    if (!byCode.has(d.code)) byCode.set(d.code, { code: d.code, name: '(chưa khai báo)', quarterCount: 0, finalizedCost: 0, finalized: 0 });
     const rec = byCode.get(d.code);
     rec.quarterCount += 1;
     rec.finalizedCost += d.finalized_cost || 0;
+    rec.finalized += d.finalized || 0;
   });
   return Array.from(byCode.values());
+}
+
+function categoryGroupOf(code) {
+  const c = state.categories.find((x) => x.code === code);
+  return (c && c.category_group) ? c.category_group : '(chưa phân nhóm)';
+}
+
+function availableYears() {
+  return Array.from(new Set(state.periods.map((p) => p.year))).sort((a, b) => a - b);
+}
+
+// Trả về danh sách quarterSummaries đã lọc theo dashYear/dashQuarter
+function filteredQuarterSummaries() {
+  let qs = quarterSummaries();
+  if (state.dashYear !== 'ALL') qs = qs.filter((q) => q.year === Number(state.dashYear));
+  if (state.dashQuarter !== 'ALL') qs = qs.filter((q) => q.quarter === state.dashQuarter);
+  return qs;
+}
+
+// Xác định kỳ "hiện tại" (theo bộ lọc) và kỳ liền trước đó trong dòng thời gian đầy đủ
+function currentAndPreviousPeriod() {
+  const all = quarterSummaries(); // đã sort theo thời gian tăng dần
+  if (all.length === 0) return { current: null, previous: null };
+  const filtered = filteredQuarterSummaries();
+  const current = filtered.length ? filtered[filtered.length - 1] : all[all.length - 1];
+  const idx = all.findIndex((q) => q.key === current.key);
+  const previous = idx > 0 ? all[idx - 1] : null;
+  return { current, previous };
+}
+
+function groupTotalsForQuarter(q) {
+  if (!q) return {};
+  const totals = {};
+  state.details.filter((d) => d.quarter === q.quarter && d.year === q.year).forEach((d) => {
+    const g = categoryGroupOf(d.code);
+    totals[g] = (totals[g] || 0) + (d.finalized_cost || 0);
+  });
+  return totals;
+}
+
+// Dữ liệu Pareto: top N chuyên đề theo chi phí hoặc theo số hồ sơ xuất toán,
+// phạm vi = "filtered" (theo bộ lọc năm/kỳ hiện tại) hoặc "cumulative" (toàn bộ)
+function paretoData(metric, scope, topN) {
+  let rows = state.details;
+  if (scope === 'filtered') {
+    if (state.dashYear !== 'ALL') rows = rows.filter((d) => d.year === Number(state.dashYear));
+    if (state.dashQuarter !== 'ALL') rows = rows.filter((d) => d.quarter === state.dashQuarter);
+  }
+  const byCode = new Map();
+  rows.forEach((d) => {
+    if (!byCode.has(d.code)) byCode.set(d.code, { code: d.code, value: 0 });
+    byCode.get(d.code).value += metric === 'cost' ? (d.finalized_cost || 0) : (d.finalized || 0);
+  });
+  const sorted = Array.from(byCode.values()).filter((r) => r.value > 0).sort((a, b) => b.value - a.value).slice(0, topN);
+  const total = Array.from(byCode.values()).reduce((s, r) => s + r.value, 0);
+  let cum = 0;
+  return sorted.map((r) => {
+    cum += r.value;
+    return { ...r, cumPct: total ? (cum / total) * 100 : 0 };
+  });
 }
 
 // ---------------------------------------------------------------
@@ -242,39 +304,80 @@ function renderTab() {
   if (state.tab === 'reference') el.innerHTML = referenceHTML();
   if (state.tab === 'guide') el.innerHTML = guideHTML();
   attachTabEvents();
-  if (state.tab === 'overview') drawChart();
+  if (state.tab === 'overview') drawAllOverviewCharts();
 }
 
 // ---------------------------------------------------------------
 // OVERVIEW TAB
 // ---------------------------------------------------------------
 function overviewHTML() {
-  const qs = quarterSummaries();
-  const gt = grandTotal(qs);
+  const years = availableYears();
+  const qsAll = quarterSummaries();
+  const qsChart = state.dashYear === 'ALL' ? qsAll : qsAll.filter((q) => q.year === Number(state.dashYear));
+  const gt = grandTotal(filteredQuarterSummaries());
   const cats = categorySummaries();
   const topRepeated = [...cats].filter((c) => c.quarterCount > 0).sort((a, b) => b.quarterCount - a.quarterCount).slice(0, 10);
-  const topCost = [...cats].filter((c) => c.finalizedCost > 0).sort((a, b) => b.finalizedCost - a.finalizedCost).slice(0, 10);
+
+  const { current, previous } = currentAndPreviousPeriod();
+  const trendPct = (previous && previous.finalizedCost) ? ((current.finalizedCost - previous.finalizedCost) / previous.finalizedCost) * 100 : null;
 
   return `
+    <div class="bg-white border border-slate-200 rounded-lg p-3 mb-4 flex flex-wrap items-center gap-3">
+      <span class="text-xs font-medium text-slate-500 uppercase">Lọc theo</span>
+      <select id="dash-year" class="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+        <option value="ALL" ${state.dashYear === 'ALL' ? 'selected' : ''}>Tất cả các năm</option>
+        ${years.map((y) => `<option value="${y}" ${String(state.dashYear) === String(y) ? 'selected' : ''}>Năm ${y}</option>`).join('')}
+      </select>
+      <select id="dash-quarter" class="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+        <option value="ALL" ${state.dashQuarter === 'ALL' ? 'selected' : ''}>Tất cả các kỳ</option>
+        ${QUARTERS.map((q) => `<option value="${q}" ${state.dashQuarter === q ? 'selected' : ''}>${q}</option>`).join('')}
+      </select>
+      <span class="text-xs text-slate-400">Áp dụng cho các thẻ số liệu, biểu đồ Pareto bên dưới</span>
+    </div>
+
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-      ${statCard('Tổng chi phí xuất toán', fmtVND(gt.finalizedCost) + ' đ', 'red')}
-      ${statCard('Tỉ lệ xuất toán/doanh thu', fmtPct(gt.rateVsRevenue), 'blue')}
+      ${statCard('Tổng chi phí xuất toán luỹ kế', fmtVND(gt.finalizedCost) + ' đ', 'red')}
+      ${statCard('Tỉ lệ xuất toán/doanh thu (TB)', fmtPct(gt.rateVsRevenue), 'blue')}
       ${statCard('Giải trình thành công (hồ sơ)', fmtPct(gt.explainByCount), 'emerald')}
       ${statCard('Giải trình thành công (tiền)', fmtPct(gt.explainByCost), 'emerald')}
     </div>
+
     <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
       <h3 class="text-sm font-semibold text-slate-700 mb-3">Chi phí xuất toán &amp; tỉ lệ theo quý</h3>
-      ${qs.length === 0 ? '<div class="text-sm text-slate-400 py-8 text-center">Chưa có dữ liệu</div>' : '<canvas id="quarter-chart" height="90"></canvas>'}
+      ${qsChart.length === 0 ? '<div class="text-sm text-slate-400 py-8 text-center">Chưa có dữ liệu</div>' : '<canvas id="quarter-chart" height="90"></canvas>'}
     </div>
-    <div class="grid md:grid-cols-2 gap-6">
-      <div class="bg-white border border-slate-200 rounded-lg p-4">
-        <h3 class="text-sm font-semibold text-slate-700 mb-3">Chuyên đề lặp lại nhiều nhất</h3>
-        ${simpleTable(['Mã', 'Tên', 'Số quý'], topRepeated.map((c) => [c.code, c.name, c.quarterCount]))}
+
+    <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <h3 class="text-sm font-semibold text-slate-700">Xu hướng so với quý trước${current ? ` (${current.label}${previous ? ' so với ' + previous.label : ''})` : ''}</h3>
+        ${trendPct !== null ? `<span class="text-sm font-semibold ${trendPct > 0 ? 'text-red-600' : trendPct < 0 ? 'text-emerald-600' : 'text-slate-500'}">${trendPct > 0 ? '▲' : trendPct < 0 ? '▼' : '—'} ${Math.abs(trendPct).toFixed(1)}% tổng chi phí xuất toán</span>` : ''}
       </div>
-      <div class="bg-white border border-slate-200 rounded-lg p-4">
-        <h3 class="text-sm font-semibold text-slate-700 mb-3">Luỹ kế chi phí xuất toán cao nhất</h3>
-        ${simpleTable(['Mã', 'Tên', 'Luỹ kế (đ)'], topCost.map((c) => [c.code, c.name, fmtVND(c.finalizedCost)]))}
+      ${!previous ? '<div class="text-sm text-slate-400 py-6 text-center">Chưa đủ dữ liệu 2 kỳ liên tiếp để so sánh</div>' : '<canvas id="trend-chart" height="90"></canvas>'}
+    </div>
+
+    <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <h3 class="text-sm font-semibold text-slate-700">Pareto: 10 chuyên đề xuất toán nhiều nhất</h3>
+        <div class="flex text-xs rounded-md border border-slate-300 overflow-hidden">
+          <button data-pareto-scope="filtered" class="px-3 py-1.5 ${state.paretoScope === 'filtered' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Theo kỳ đang lọc</button>
+          <button data-pareto-scope="cumulative" class="px-3 py-1.5 ${state.paretoScope === 'cumulative' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Luỹ kế toàn bộ</button>
+        </div>
       </div>
+      <div class="grid md:grid-cols-2 gap-6">
+        <div>
+          <div class="text-xs font-medium text-slate-500 uppercase mb-2">Theo chi phí xuất toán</div>
+          <canvas id="pareto-cost-chart" height="220"></canvas>
+        </div>
+        <div>
+          <div class="text-xs font-medium text-slate-500 uppercase mb-2">Theo số hồ sơ xuất toán</div>
+          <canvas id="pareto-count-chart" height="220"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-white border border-slate-200 rounded-lg p-4">
+      <h3 class="text-sm font-semibold text-slate-700 mb-3">Chuyên đề lặp lại nhiều nhất (tất cả các kỳ)</h3>
+      ${simpleTable(['Mã', 'Tên', 'Số quý'], topRepeated.map((c) => [c.code, c.name, c.quarterCount]))}
     </div>
   `;
 }
@@ -291,7 +394,8 @@ function simpleTable(headers, rows) {
 }
 
 function drawChart() {
-  const qs = quarterSummaries();
+  const qsAll = quarterSummaries();
+  const qs = state.dashYear === 'ALL' ? qsAll : qsAll.filter((q) => q.year === Number(state.dashYear));
   if (qs.length === 0) return;
   const ctx = document.getElementById('quarter-chart');
   if (!ctx) return;
@@ -313,6 +417,62 @@ function drawChart() {
       },
     },
   });
+}
+
+function drawTrendChart() {
+  const { current, previous } = currentAndPreviousPeriod();
+  const ctx = document.getElementById('trend-chart');
+  if (!ctx || !previous) return;
+  const prevTotals = groupTotalsForQuarter(previous);
+  const curTotals = groupTotalsForQuarter(current);
+  const groups = Array.from(new Set([...Object.keys(prevTotals), ...Object.keys(curTotals)])).sort((a, b) => (curTotals[b] || 0) - (curTotals[a] || 0));
+  if (state.trendChartRef) state.trendChartRef.destroy();
+  state.trendChartRef = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: groups,
+      datasets: [
+        { label: `${previous.label} (tr đ)`, data: groups.map((g) => Math.round((prevTotals[g] || 0) / 1e6)), backgroundColor: '#cbd5e1' },
+        { label: `${current.label} (tr đ)`, data: groups.map((g) => Math.round((curTotals[g] || 0) / 1e6)), backgroundColor: '#dc2626' },
+      ],
+    },
+    options: { responsive: true, scales: { y: { title: { display: true, text: 'triệu đ' } } } },
+  });
+}
+
+function drawParetoCharts() {
+  drawParetoOne('pareto-cost-chart', 'paretoCostChartRef', 'cost', '#dc2626', 'triệu đ', (v) => Math.round(v / 1e6));
+  drawParetoOne('pareto-count-chart', 'paretoCountChartRef', 'count', '#1e3a8a', 'hồ sơ', (v) => v);
+}
+
+function drawParetoOne(canvasId, refKey, metric, color, unitLabel, transform) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  const data = paretoData(metric, state.paretoScope, 10);
+  if (state[refKey]) state[refKey].destroy();
+  if (data.length === 0) { state[refKey] = null; return; }
+  state[refKey] = new Chart(ctx, {
+    data: {
+      labels: data.map((d) => d.code),
+      datasets: [
+        { type: 'bar', label: unitLabel, data: data.map((d) => transform(d.value)), backgroundColor: color, yAxisID: 'y' },
+        { type: 'line', label: '% luỹ kế', data: data.map((d) => +d.cumPct.toFixed(1)), borderColor: '#f59e0b', yAxisID: 'y1', tension: 0.2 },
+      ],
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y: { position: 'left', title: { display: true, text: unitLabel } },
+        y1: { position: 'right', min: 0, max: 100, grid: { drawOnChartArea: false }, title: { display: true, text: '% luỹ kế' } },
+      },
+    },
+  });
+}
+
+function drawAllOverviewCharts() {
+  drawChart();
+  drawTrendChart();
+  drawParetoCharts();
 }
 
 // ---------------------------------------------------------------
@@ -530,6 +690,15 @@ function guideHTML() {
 
 
 function attachTabEvents() {
+  if (state.tab === 'overview') {
+    const yearEl = document.getElementById('dash-year');
+    if (yearEl) yearEl.onchange = (e) => { state.dashYear = e.target.value; renderTab(); };
+    const quarterEl = document.getElementById('dash-quarter');
+    if (quarterEl) quarterEl.onchange = (e) => { state.dashQuarter = e.target.value; renderTab(); };
+    document.querySelectorAll('[data-pareto-scope]').forEach((btn) => {
+      btn.onclick = () => { state.paretoScope = btn.dataset.paretoScope; renderTab(); };
+    });
+  }
   if (state.tab === 'details') {
     const filterEl = document.getElementById('quarter-filter');
     if (filterEl) filterEl.onchange = (e) => { state.quarterFilter = e.target.value; renderTab(); };
@@ -636,6 +805,11 @@ async function quickAddCategory() {
 // IMPORT / EXPORT EXCEL
 // ---------------------------------------------------------------
 async function handleImport(e) {
+  function dedupeBy(rows, keyFn) {
+    const map = new Map();
+    rows.forEach((r) => map.set(keyFn(r), r)); // dòng nhập sau ghi đè dòng nhập trước nếu trùng khoá
+    return Array.from(map.values());
+  }
   const file = e.target.files?.[0];
   if (!file) return;
   const msgEl = document.getElementById('import-msg');
@@ -644,27 +818,42 @@ async function handleImport(e) {
     const wb = XLSX.read(buf, { type: 'array' });
     const sheet = (name) => wb.Sheets[name] ? XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '' }) : [];
 
-    const cats = sheet('Danh mục chuyên đề')
-      .map((r) => ({ code: String(r['Mã chuyên đề'] || '').trim(), name: String(r['Tên chuyên đề'] || '').trim(), category_group: String(r['Nhóm'] || '').trim() }))
-      .filter((r) => r.code);
-    const pers = sheet('Kỳ giám định')
-      .map((r) => ({ quarter: String(r['Quý'] || '').trim(), year: Number(r['Năm']) || null, revenue: Number(r['Tổng doanh thu BHYT quý (đ)']) || 0 }))
-      .filter((r) => r.quarter && r.year && !String(r.quarter).startsWith('TỔNG'));
-    const dets = sheet('Chi tiết xuất toán')
-      .map((r) => ({
-        quarter: String(r['Quý'] || '').trim(), year: Number(r['Năm']) || null, code: String(r['Mã chuyên đề'] || '').trim(),
-        notified: Number(r['Số thông báo (hồ sơ)']) || 0, finalized: Number(r['Số xuất toán (hồ sơ)']) || 0,
-        notified_cost: Number(r['Chi phí thông báo (đ)']) || 0, finalized_cost: Number(r['Chi phí xuất toán (đ)']) || 0,
-        status: String(r['Trạng thái giải trình'] || '').trim() || STATUS_OPTIONS[0], note: String(r['Ghi chú'] || '').trim(),
-      }))
-      .filter((r) => r.quarter && r.year && r.code);
+    const cats = dedupeBy(
+      sheet('Danh mục chuyên đề')
+        .map((r) => ({ code: String(r['Mã chuyên đề'] || '').trim(), name: String(r['Tên chuyên đề'] || '').trim(), category_group: String(r['Nhóm'] || '').trim() }))
+        .filter((r) => r.code),
+      (r) => r.code
+    );
+    const pers = dedupeBy(
+      sheet('Kỳ giám định')
+        .map((r) => ({ quarter: String(r['Quý'] || '').trim(), year: Number(r['Năm']) || null, revenue: Number(r['Tổng doanh thu BHYT quý (đ)']) || 0 }))
+        .filter((r) => r.quarter && r.year && !String(r.quarter).startsWith('TỔNG')),
+      (r) => `${r.quarter}-${r.year}`
+    );
+    const dets = dedupeBy(
+      sheet('Chi tiết xuất toán')
+        .map((r) => ({
+          quarter: String(r['Quý'] || '').trim(), year: Number(r['Năm']) || null, code: String(r['Mã chuyên đề'] || '').trim(),
+          notified: Number(r['Số thông báo (hồ sơ)']) || 0, finalized: Number(r['Số xuất toán (hồ sơ)']) || 0,
+          notified_cost: Number(r['Chi phí thông báo (đ)']) || 0, finalized_cost: Number(r['Chi phí xuất toán (đ)']) || 0,
+          status: String(r['Trạng thái giải trình'] || '').trim() || STATUS_OPTIONS[0], note: String(r['Ghi chú'] || '').trim(),
+        }))
+        .filter((r) => r.quarter && r.year && r.code),
+      (r) => `${r.quarter}-${r.year}-${r.code}`
+    );
 
-    if (cats.length) await sb.from('bhyt_categories').upsert(cats, { onConflict: 'code' });
-    if (pers.length) await sb.from('bhyt_periods').upsert(pers, { onConflict: 'quarter,year' });
-    if (dets.length) await sb.from('bhyt_details').upsert(dets, { onConflict: 'quarter,year,code' });
+    const results = [];
+    if (cats.length) results.push(['Danh mục chuyên đề', await sb.from('bhyt_categories').upsert(cats, { onConflict: 'code' })]);
+    if (pers.length) results.push(['Kỳ giám định', await sb.from('bhyt_periods').upsert(pers, { onConflict: 'quarter,year' })]);
+    if (dets.length) results.push(['Chi tiết xuất toán', await sb.from('bhyt_details').upsert(dets, { onConflict: 'quarter,year,code' })]);
 
+    const failed = results.filter(([, res]) => res.error);
     await loadAll();
-    msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md px-3 py-2 text-sm">Đã cộng dồn: ${pers.length} kỳ, ${cats.length} chuyên đề, ${dets.length} dòng chi tiết.</div></div>`;
+    if (failed.length) {
+      msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-red-50 text-red-700 border border-red-200 rounded-md px-3 py-2 text-sm">Lỗi khi ghi ${failed.map(([n]) => n).join(', ')}: ${failed.map(([, res]) => res.error.message).join(' | ')}</div></div>`;
+    } else {
+      msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md px-3 py-2 text-sm">Đã cộng dồn: ${pers.length} kỳ, ${cats.length} chuyên đề, ${dets.length} dòng chi tiết.</div></div>`;
+    }
     renderTab();
   } catch (err) {
     msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-red-50 text-red-700 border border-red-200 rounded-md px-3 py-2 text-sm">Không đọc được file. Kiểm tra đúng mẫu 3 sheet.</div></div>`;
