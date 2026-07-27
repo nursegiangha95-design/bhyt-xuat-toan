@@ -33,6 +33,7 @@
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const QUARTERS = ['Q1', 'Q2', 'Q3', 'Q4'];
 const STATUS_OPTIONS = ['Đang giải trình', 'Đã giải trình thành công', 'Đã giải trình một phần', 'Đã giải trình thất bại'];
+const CAUSE_OPTIONS = ['Lỗi cá nhân', 'Lỗi hệ thống'];
 const STATUS_CLASS = {
   'Đang giải trình': 'bg-slate-100 text-slate-700 border-slate-300',
   'Đã giải trình thành công': 'bg-emerald-50 text-emerald-700 border-emerald-300',
@@ -47,10 +48,11 @@ const qKey = (q, y) => `${q}-${y}`;
 
 let state = {
   user: null, role: 'viewer',
-  categories: [], periods: [], details: [], reference: [],
+  categories: [], periods: [], details: [], reference: [], departments: [],
   tab: 'overview', quarterFilter: 'ALL',
   refSearch: '', refGroup: 'ALL', refExpanded: new Set(),
   dashYear: 'ALL', dashQuarter: 'ALL', paretoScope: 'filtered',
+  deptExpanded: new Set(),
   chartRef: null, trendChartRef: null, paretoCostChartRef: null, paretoCountChartRef: null,
 };
 
@@ -134,16 +136,18 @@ async function logout() {
 // DATA LOADING
 // ---------------------------------------------------------------
 async function loadAll() {
-  const [{ data: cats }, { data: pers }, { data: dets }, { data: refs }] = await Promise.all([
+  const [{ data: cats }, { data: pers }, { data: dets }, { data: refs }, { data: deps }] = await Promise.all([
     sb.from('bhyt_categories').select('*').order('code'),
     sb.from('bhyt_periods').select('*').order('year').order('quarter'),
     sb.from('bhyt_details').select('*'),
     sb.from('bhyt_reference').select('*').order('phu_luc').order('stt'),
+    sb.from('bhyt_departments').select('*').order('name'),
   ]);
   state.categories = cats || [];
   state.periods = pers || [];
   state.details = dets || [];
   state.reference = refs || [];
+  state.departments = deps || [];
 }
 
 // ---------------------------------------------------------------
@@ -191,6 +195,28 @@ function categorySummaries() {
     rec.finalized += d.finalized || 0;
   });
   return Array.from(byCode.values());
+}
+
+// Thống kê theo khoa: mỗi khoa dính bao nhiêu chuyên đề khác nhau, và chuyên đề nào bị lặp lại
+function departmentSummaries() {
+  const byDept = new Map();
+  state.departments.forEach((d) => byDept.set(d.name, { name: d.name, totalRows: 0, personalCause: 0, systemCause: 0, byCode: new Map() }));
+  state.details.forEach((d) => {
+    (d.departments || []).forEach((deptName) => {
+      if (!byDept.has(deptName)) byDept.set(deptName, { name: deptName, totalRows: 0, personalCause: 0, systemCause: 0, byCode: new Map() });
+      const rec = byDept.get(deptName);
+      rec.totalRows += 1;
+      if (d.cause === 'Lỗi cá nhân') rec.personalCause += 1;
+      if (d.cause === 'Lỗi hệ thống') rec.systemCause += 1;
+      rec.byCode.set(d.code, (rec.byCode.get(d.code) || 0) + 1);
+    });
+  });
+  return Array.from(byDept.values()).map((r) => ({
+    ...r,
+    distinctCodeCount: r.byCode.size,
+    repeatedCodes: Array.from(r.byCode.entries()).filter(([, c]) => c > 1).sort((a, b) => b[1] - a[1]),
+    allCodes: Array.from(r.byCode.entries()).sort((a, b) => b[1] - a[1]),
+  }));
 }
 
 function categoryGroupOf(code) {
@@ -275,6 +301,7 @@ function render() {
       <div class="max-w-7xl mx-auto px-6 flex gap-1 border-t border-blue-800">
         ${tabBtn('overview', 'Tổng quan')}
         ${tabBtn('details', 'Chi tiết xuất toán')}
+        ${tabBtn('departments', 'Thống kê theo khoa')}
         ${tabBtn('setup', 'Kỳ & Danh mục')}
         ${tabBtn('reference', 'Tra cứu chuyên đề')}
         ${tabBtn('guide', 'Hướng dẫn')}
@@ -301,6 +328,7 @@ function renderTab() {
   if (state.tab === 'overview') el.innerHTML = overviewHTML();
   if (state.tab === 'details') el.innerHTML = detailsHTML();
   if (state.tab === 'setup') el.innerHTML = setupHTML();
+  if (state.tab === 'departments') el.innerHTML = departmentsHTML();
   if (state.tab === 'reference') el.innerHTML = referenceHTML();
   if (state.tab === 'guide') el.innerHTML = guideHTML();
   attachTabEvents();
@@ -503,12 +531,12 @@ function detailsHTML() {
             <th class="text-left px-2 py-2">Quý</th><th class="text-left px-2 py-2">Năm</th><th class="text-left px-2 py-2">Mã</th>
             <th class="text-right px-2 py-2">Số TB</th><th class="text-right px-2 py-2">Số XT</th>
             <th class="text-right px-2 py-2">CP thông báo</th><th class="text-right px-2 py-2">CP xuất toán</th>
-            <th class="text-left px-2 py-2">Trạng thái</th><th class="text-left px-2 py-2">Ghi chú</th><th></th>
+            <th class="text-left px-2 py-2">Trạng thái</th><th class="text-left px-2 py-2">Nguyên nhân</th><th class="text-left px-2 py-2">Khoa vi phạm</th><th class="text-left px-2 py-2">Ghi chú</th><th></th>
           </tr>
         </thead>
         <tbody>
           ${rows.map((r) => detailRow(r, canEdit)).join('')}
-          ${rows.length === 0 ? '<tr><td colspan="10" class="text-center text-slate-400 py-8">Chưa có dữ liệu</td></tr>' : ''}
+          ${rows.length === 0 ? '<tr><td colspan="12" class="text-center text-slate-400 py-8">Chưa có dữ liệu</td></tr>' : ''}
         </tbody>
       </table>
     </div>
@@ -527,6 +555,8 @@ function detailRow(r, canEdit) {
       <td class="px-2 py-1"><input ${dis} type="number" data-field="notified_cost" value="${r.notified_cost}" class="border border-slate-200 rounded px-1 py-1 w-28 text-right" /></td>
       <td class="px-2 py-1"><input ${dis} type="number" data-field="finalized_cost" value="${r.finalized_cost}" class="border border-slate-200 rounded px-1 py-1 w-28 text-right" /></td>
       <td class="px-2 py-1"><select ${dis} data-field="status" class="badge ${STATUS_CLASS[r.status] || ''}">${STATUS_OPTIONS.map((s) => `<option ${s === r.status ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
+      <td class="px-2 py-1"><select ${dis} data-field="cause" class="border border-slate-200 rounded px-1 py-1 w-28 text-xs"><option value="" ${!r.cause ? 'selected' : ''}>—</option>${CAUSE_OPTIONS.map((c) => `<option ${c === r.cause ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
+      <td class="px-2 py-1"><select ${dis} multiple data-field="departments" data-multi="true" size="3" class="border border-slate-200 rounded px-1 py-1 w-32 text-xs">${state.departments.map((d) => `<option value="${escapeHtml(d.name)}" ${(r.departments || []).includes(d.name) ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}</select></td>
       <td class="px-2 py-1"><input ${dis} type="text" data-field="note" value="${r.note || ''}" class="border border-slate-200 rounded px-1 py-1 w-32" /></td>
       <td class="px-2 py-1 text-center">${canEdit ? `<button data-del="${r.id}" class="text-slate-400 hover:text-red-600">✕</button>` : ''}</td>
     </tr>`;
@@ -583,6 +613,71 @@ function setupHTML() {
       </div>
     </div>
   `;
+}
+
+// ---------------------------------------------------------------
+// DEPARTMENTS TAB (Danh mục khoa + thống kê theo khoa)
+// ---------------------------------------------------------------
+function departmentsHTML() {
+  const canEdit = state.role === 'editor';
+  const stats = [...departmentSummaries()].sort((a, b) => b.distinctCodeCount - a.distinctCodeCount);
+
+  return `
+    <div class="grid lg:grid-cols-3 gap-6">
+      <div class="lg:col-span-1 bg-white border border-slate-200 rounded-lg p-4 h-fit">
+        <h3 class="text-sm font-semibold text-slate-700 mb-3">Danh mục khoa</h3>
+        <table class="w-full text-sm">
+          <tbody>
+            ${state.departments.map((d) => `
+              <tr class="border-t border-slate-100" data-dept-name="${escapeHtml(d.name)}">
+                <td class="py-1.5">${escapeHtml(d.name)}</td>
+                <td class="py-1.5 text-center w-8">${canEdit ? `<button data-del-department="${escapeHtml(d.name)}" class="text-slate-400 hover:text-red-600">✕</button>` : ''}</td>
+              </tr>`).join('')}
+            ${state.departments.length === 0 ? '<tr><td class="text-center text-slate-400 py-6">Chưa có khoa nào</td></tr>' : ''}
+          </tbody>
+        </table>
+        ${canEdit ? `<div class="mt-3 pt-3 border-t border-slate-100 flex gap-2">
+          <input id="new-dept-name" placeholder="Tên khoa mới (VD: Khoa Nội)" class="border border-slate-300 rounded px-2 py-1.5 text-sm flex-1" />
+          <button id="btn-quick-add-department" class="bg-blue-900 text-white rounded-md px-3 py-1.5 text-sm">Thêm</button>
+        </div>` : ''}
+      </div>
+
+      <div class="lg:col-span-2 bg-white border border-slate-200 rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-slate-700 mb-3">Mỗi khoa dính bao nhiêu chuyên đề</h3>
+        <div class="space-y-2">
+          ${stats.length === 0 ? '<div class="text-sm text-slate-400 py-8 text-center">Chưa có dữ liệu — gắn khoa vào các dòng ở tab "Chi tiết xuất toán"</div>' : stats.map(deptItemHTML).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function deptItemHTML(r) {
+  const expanded = state.deptExpanded.has(r.name);
+  return `
+    <div class="border border-slate-200 rounded-lg overflow-hidden">
+      <button data-dept-toggle="${escapeHtml(r.name)}" class="w-full text-left px-4 py-3 flex items-center justify-between gap-3 hover:bg-slate-50">
+        <div class="flex items-center gap-3">
+          <span class="text-sm font-medium text-slate-800">${escapeHtml(r.name)}</span>
+          <span class="text-xs text-slate-500">${r.distinctCodeCount} chuyên đề · ${r.totalRows} lượt</span>
+          ${r.repeatedCodes.length ? `<span class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">${r.repeatedCodes.length} chuyên đề lặp lại</span>` : ''}
+        </div>
+        <span class="text-slate-400 text-sm shrink-0">${expanded ? '▲' : '▼'}</span>
+      </button>
+      ${expanded ? `
+        <div class="px-4 pb-4 pt-1 border-t border-slate-100 text-sm">
+          <div class="flex gap-4 text-xs text-slate-500 mb-2">
+            <span>Lỗi cá nhân: <b class="text-slate-700">${r.personalCause}</b></span>
+            <span>Lỗi hệ thống: <b class="text-slate-700">${r.systemCause}</b></span>
+          </div>
+          <table class="w-full text-sm">
+            <thead><tr class="text-left text-slate-500 border-b border-slate-200"><th class="py-1 font-medium">Mã chuyên đề</th><th class="py-1 font-medium text-right">Số lần dính</th></tr></thead>
+            <tbody>
+              ${r.allCodes.map(([code, count]) => `<tr class="border-b border-slate-100 ${count > 1 ? 'bg-amber-50' : ''}"><td class="py-1 font-mono">${escapeHtml(code)}</td><td class="py-1 text-right ${count > 1 ? 'font-semibold text-amber-700' : ''}">${count}${count > 1 ? ' (lặp lại)' : ''}</td></tr>`).join('')}
+            </tbody>
+          </table>
+        </div>` : ''}
+    </div>`;
 }
 
 // ---------------------------------------------------------------
@@ -706,7 +801,11 @@ function attachTabEvents() {
     if (addBtn) addBtn.onclick = addDetailRow;
     document.querySelectorAll('#tab-content tr[data-id]').forEach((tr) => {
       tr.querySelectorAll('[data-field]').forEach((input) => {
-        input.addEventListener('change', () => saveDetailField(tr.dataset.id, input.dataset.field, input.value));
+        if (input.dataset.multi === 'true') {
+          input.addEventListener('change', () => saveDetailField(tr.dataset.id, input.dataset.field, Array.from(input.selectedOptions).map((o) => o.value)));
+        } else {
+          input.addEventListener('change', () => saveDetailField(tr.dataset.id, input.dataset.field, input.value));
+        }
       });
       const delBtn = tr.querySelector('[data-del]');
       if (delBtn) delBtn.onclick = () => deleteDetailRow(tr.dataset.id);
@@ -728,6 +827,20 @@ function attachTabEvents() {
       tr.querySelectorAll('[data-field]').forEach((input) => input.addEventListener('change', () => saveCategoryField(tr.dataset.code, input.dataset.field, input.value)));
       const delBtn = tr.querySelector('[data-del-category]');
       if (delBtn) delBtn.onclick = () => deleteCategory(tr.dataset.code);
+    });
+  }
+  if (state.tab === 'departments') {
+    const quickAddBtn = document.getElementById('btn-quick-add-department');
+    if (quickAddBtn) quickAddBtn.onclick = quickAddDepartment;
+    document.querySelectorAll('[data-del-department]').forEach((btn) => {
+      btn.onclick = () => deleteDepartment(btn.dataset.delDepartment);
+    });
+    document.querySelectorAll('[data-dept-toggle]').forEach((btn) => {
+      btn.onclick = () => {
+        const name = btn.dataset.deptToggle;
+        if (state.deptExpanded.has(name)) state.deptExpanded.delete(name); else state.deptExpanded.add(name);
+        renderTab();
+      };
     });
   }
   if (state.tab === 'reference') {
@@ -761,7 +874,7 @@ async function deleteDetailRow(id) {
   renderTab();
 }
 async function addDetailRow() {
-  const payload = { quarter: 'Q1', year: new Date().getFullYear(), code: state.categories[0]?.code || null, notified: 0, finalized: 0, notified_cost: 0, finalized_cost: 0, status: STATUS_OPTIONS[0], note: '' };
+  const payload = { quarter: 'Q1', year: new Date().getFullYear(), code: state.categories[0]?.code || null, notified: 0, finalized: 0, notified_cost: 0, finalized_cost: 0, status: STATUS_OPTIONS[0], cause: null, departments: [], note: '' };
   const { data, error } = await sb.from('bhyt_details').insert(payload).select().single();
   if (!error) { state.details.push(data); renderTab(); }
 }
@@ -801,6 +914,19 @@ async function quickAddCategory() {
   if (!error) { state.categories.push(data); renderTab(); }
 }
 
+async function quickAddDepartment() {
+  const input = document.getElementById('new-dept-name');
+  const name = input.value.trim();
+  if (!name) return;
+  const { data, error } = await sb.from('bhyt_departments').insert({ name }).select().single();
+  if (!error) { state.departments.push(data); input.value = ''; renderTab(); }
+}
+async function deleteDepartment(name) {
+  await sb.from('bhyt_departments').delete().eq('name', name);
+  state.departments = state.departments.filter((d) => d.name !== name);
+  renderTab();
+}
+
 // ---------------------------------------------------------------
 // IMPORT / EXPORT EXCEL
 // ---------------------------------------------------------------
@@ -836,15 +962,23 @@ async function handleImport(e) {
           quarter: String(r['Quý'] || '').trim(), year: Number(r['Năm']) || null, code: String(r['Mã chuyên đề'] || '').trim(),
           notified: Number(r['Số thông báo (hồ sơ)']) || 0, finalized: Number(r['Số xuất toán (hồ sơ)']) || 0,
           notified_cost: Number(r['Chi phí thông báo (đ)']) || 0, finalized_cost: Number(r['Chi phí xuất toán (đ)']) || 0,
-          status: String(r['Trạng thái giải trình'] || '').trim() || STATUS_OPTIONS[0], note: String(r['Ghi chú'] || '').trim(),
+          status: String(r['Trạng thái giải trình'] || '').trim() || STATUS_OPTIONS[0],
+          cause: String(r['Nguyên nhân'] || '').trim() || null,
+          departments: String(r['Khoa vi phạm'] || '').split(/[;,]/).map((s) => s.trim()).filter(Boolean),
+          note: String(r['Ghi chú'] || '').trim(),
         }))
         .filter((r) => r.quarter && r.year && r.code),
       (r) => `${r.quarter}-${r.year}-${r.code}`
     );
 
+    const deptNamesFromSheet = sheet('Danh mục khoa').map((r) => String(r['Tên khoa'] || r['Khoa'] || '').trim()).filter(Boolean);
+    const deptNamesFromDetails = dets.flatMap((d) => d.departments);
+    const deps = Array.from(new Set([...deptNamesFromSheet, ...deptNamesFromDetails])).map((name) => ({ name }));
+
     const results = [];
     if (cats.length) results.push(['Danh mục chuyên đề', await sb.from('bhyt_categories').upsert(cats, { onConflict: 'code' })]);
     if (pers.length) results.push(['Kỳ giám định', await sb.from('bhyt_periods').upsert(pers, { onConflict: 'quarter,year' })]);
+    if (deps.length) results.push(['Danh mục khoa', await sb.from('bhyt_departments').upsert(deps, { onConflict: 'name' })]);
     if (dets.length) results.push(['Chi tiết xuất toán', await sb.from('bhyt_details').upsert(dets, { onConflict: 'quarter,year,code' })]);
 
     const failed = results.filter(([, res]) => res.error);
@@ -867,9 +1001,11 @@ function handleExport() {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(state.categories.map((c) => ({ 'Mã chuyên đề': c.code, 'Tên chuyên đề': c.name, 'Nhóm': c.category_group }))), 'Danh mục chuyên đề');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(state.periods.map((p) => ({ 'Quý': p.quarter, 'Năm': p.year, 'Tổng doanh thu BHYT quý (đ)': p.revenue }))), 'Kỳ giám định');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(state.departments.map((d) => ({ 'Tên khoa': d.name }))), 'Danh mục khoa');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(state.details.map((d) => ({
     'Quý': d.quarter, 'Năm': d.year, 'Mã chuyên đề': d.code, 'Số thông báo (hồ sơ)': d.notified, 'Số xuất toán (hồ sơ)': d.finalized,
-    'Chi phí thông báo (đ)': d.notified_cost, 'Chi phí xuất toán (đ)': d.finalized_cost, 'Trạng thái giải trình': d.status, 'Ghi chú': d.note,
+    'Chi phí thông báo (đ)': d.notified_cost, 'Chi phí xuất toán (đ)': d.finalized_cost, 'Trạng thái giải trình': d.status,
+    'Nguyên nhân': d.cause || '', 'Khoa vi phạm': (d.departments || []).join('; '), 'Ghi chú': d.note,
   }))), 'Chi tiết xuất toán');
   XLSX.writeFile(wb, `Xuat_toan_BHYT_export_${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
