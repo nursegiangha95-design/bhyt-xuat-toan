@@ -16,12 +16,6 @@
 </head>
 <body class="bg-slate-50 text-slate-800">
 
-<!-- ============================================================
-     CẤU HÌNH: điền URL và anon key của project Supabase RIÊNG
-     (lấy ở Project Settings > API). anon key là public, an toàn
-     để đưa vào code phía client — quyền hạn thật sự được
-     Postgres Row Level Security (đã chạy ở bhyt_schema.sql) quyết định.
-     ============================================================ -->
 <script>
   const SUPABASE_URL = 'https://gkzdfbgqclmrnkktvuke.supabase.co';
   const SUPABASE_ANON_KEY = 'sb_publishable_zbu8SZGXpzAicdkVoxXRwQ_0_6bsIUl';
@@ -32,28 +26,59 @@
 <script>
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const QUARTERS = ['Q1', 'Q2', 'Q3', 'Q4'];
-const STATUS_OPTIONS = ['Đang giải trình', 'Đã giải trình thành công', 'Đã giải trình một phần', 'Đã giải trình thất bại'];
-const CAUSE_OPTIONS = ['Lỗi cá nhân', 'Lỗi hệ thống'];
-const STATUS_CLASS = {
-  'Đang giải trình': 'bg-slate-100 text-slate-700 border-slate-300',
-  'Đã giải trình thành công': 'bg-emerald-50 text-emerald-700 border-emerald-300',
-  'Đã giải trình một phần': 'bg-amber-50 text-amber-700 border-amber-300',
-  'Đã giải trình thất bại': 'bg-red-50 text-red-700 border-red-300',
-};
+const QUARTER_VN = { Q1: 'Quý I', Q2: 'Quý II', Q3: 'Quý III', Q4: 'Quý IV' };
+const CAUSE_OPTIONS = ['Cá nhân', 'Hệ thống'];
+const TARGET_RATE = 0.005; // mục tiêu tỉ lệ xuất toán ≤ 0.5%
 
 const app = document.getElementById('app');
 const fmtVND = (n) => (n === null || n === undefined || isNaN(n)) ? '—' : new Intl.NumberFormat('vi-VN').format(Math.round(n));
 const fmtPct = (n) => (n === null || n === undefined || !isFinite(n)) ? '—' : (n * 100).toFixed(2) + '%';
 const qKey = (q, y) => `${q}-${y}`;
+function escapeHtml(s) {
+  return String(s === null || s === undefined ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function normalizeQuarter(raw) {
+  const s = String(raw || '').trim().toLowerCase();
+  if (s.includes('iv') || s === 'q4' || s === '4') return 'Q4';
+  if (s.includes('iii') || s === 'q3' || s === '3') return 'Q3';
+  if (s.includes('ii') || s === 'q2' || s === '2') return 'Q2';
+  if (s.includes('i') || s === 'q1' || s === '1') return 'Q1';
+  return String(raw || '').trim();
+}
+// Chuẩn hoá khoa/tên người: gộp theo chữ thường không phân biệt hoa/thường, hiển thị theo biến thể xuất hiện nhiều nhất
+function buildNormalizer(values) {
+  const counts = new Map();
+  values.forEach((v) => {
+    const raw = String(v || '').trim();
+    if (!raw) return;
+    const key = raw.toLowerCase();
+    if (!counts.has(key)) counts.set(key, new Map());
+    const m = counts.get(key);
+    m.set(raw, (m.get(raw) || 0) + 1);
+  });
+  const canonical = new Map();
+  counts.forEach((m, key) => {
+    let best = null, bestN = -1;
+    m.forEach((n, text) => { if (n > bestN) { best = text; bestN = n; } });
+    canonical.set(key, best);
+  });
+  return (v) => {
+    const raw = String(v || '').trim();
+    if (!raw) return '';
+    return canonical.get(raw.toLowerCase()) || raw;
+  };
+}
 
 let state = {
   user: null, role: 'viewer',
-  categories: [], periods: [], details: [], reference: [], departments: [],
-  tab: 'overview', quarterFilter: 'ALL',
-  refSearch: '', refGroup: 'ALL', refSource: 'ALL', refExpanded: new Set(),
-  refAdding: false, refEditingId: null,
+  lines: [], periods: [], categories: [], reference: [],
+  tab: 'overview',
   dashYear: 'ALL', dashQuarter: 'ALL', paretoScope: 'filtered',
-  deptExpanded: new Set(),
+  filterKhoa: 'ALL', filterBacSi: 'ALL', filterNhom: 'ALL',
+  quarterFilter: 'ALL',
+  heatmapMode: 'department', heatmapAxis: 'quarter', heatmapMetric: 'cost',
+  riskQuarterKey: null,
+  refSearch: '', refGroup: 'ALL', refSource: 'ALL', refExpanded: new Set(), refAdding: false, refEditingId: null,
   showPwBox: false, pwMsg: null,
   chartRef: null, trendChartRef: null, paretoCostChartRef: null, paretoCountChartRef: null,
 };
@@ -67,7 +92,7 @@ async function init() {
       <div class="min-h-screen flex items-center justify-center px-4">
         <div class="max-w-md bg-white border border-amber-200 rounded-xl shadow-sm p-6 text-center">
           <h1 class="text-lg font-semibold text-amber-700 mb-2">Chưa cấu hình Supabase</h1>
-          <p class="text-sm text-slate-600">Mở file <code class="bg-slate-100 px-1 rounded">index.html</code>, tìm 2 dòng <code class="bg-slate-100 px-1 rounded">SUPABASE_URL</code> và <code class="bg-slate-100 px-1 rounded">SUPABASE_ANON_KEY</code> ở đầu file, thay bằng giá trị thật lấy từ Project Settings → API trong Supabase (xem file hướng dẫn triển khai, Bước 1–3).</p>
+          <p class="text-sm text-slate-600">Điền SUPABASE_URL và SUPABASE_ANON_KEY ở đầu file index.html.</p>
         </div>
       </div>`;
     return;
@@ -75,18 +100,13 @@ async function init() {
   try {
     const { data: { session } } = await sb.auth.getSession();
     if (session) { await afterLogin(session); } else { renderLogin(); }
-    sb.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT') renderLogin();
-    });
+    sb.auth.onAuthStateChange((event, session) => { if (event === 'SIGNED_OUT') renderLogin(); });
   } catch (e) {
-    app.innerHTML = `
-      <div class="min-h-screen flex items-center justify-center px-4">
-        <div class="max-w-md bg-white border border-red-200 rounded-xl shadow-sm p-6 text-center">
-          <h1 class="text-lg font-semibold text-red-700 mb-2">Không kết nối được tới Supabase</h1>
-          <p class="text-sm text-slate-600 mb-2">Kiểm tra lại SUPABASE_URL và SUPABASE_ANON_KEY đã đúng chưa, và project Supabase có đang chạy không.</p>
-          <p class="text-xs text-slate-400 font-mono break-all">${(e && e.message) || String(e)}</p>
-        </div>
-      </div>`;
+    app.innerHTML = `<div class="min-h-screen flex items-center justify-center px-4">
+      <div class="max-w-md bg-white border border-red-200 rounded-xl shadow-sm p-6 text-center">
+        <h1 class="text-lg font-semibold text-red-700 mb-2">Không kết nối được tới Supabase</h1>
+        <p class="text-xs text-slate-400 font-mono break-all">${(e && e.message) || String(e)}</p>
+      </div></div>`;
   }
 }
 
@@ -98,17 +118,10 @@ function renderLogin(errorMsg) {
         <p class="text-sm text-slate-500 mb-4">Đăng nhập để xem hoặc chỉnh sửa dữ liệu.</p>
         ${errorMsg ? `<div class="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2 mb-3">${errorMsg}</div>` : ''}
         <form id="login-form" class="space-y-3">
-          <div>
-            <label class="text-xs text-slate-500">Email</label>
-            <input required type="email" id="login-email" class="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm" />
-          </div>
-          <div>
-            <label class="text-xs text-slate-500">Mật khẩu</label>
-            <input required type="password" id="login-password" class="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm" />
-          </div>
+          <div><label class="text-xs text-slate-500">Email</label><input required type="email" id="login-email" class="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm" /></div>
+          <div><label class="text-xs text-slate-500">Mật khẩu</label><input required type="password" id="login-password" class="mt-1 w-full border border-slate-300 rounded-md px-3 py-2 text-sm" /></div>
           <button type="submit" class="w-full bg-blue-900 text-white rounded-md py-2 text-sm font-medium hover:bg-blue-800">Đăng nhập</button>
         </form>
-        <p class="text-xs text-slate-400 mt-4">Chưa có tài khoản? Liên hệ quản trị viên để được cấp email/mật khẩu.</p>
       </div>
     </div>`;
   document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -128,191 +141,236 @@ async function afterLogin(session) {
   await loadAll();
   render();
 }
-
+async function logout() {
+  await sb.auth.signOut();
+  state = { ...state, user: null, role: 'viewer', lines: [], periods: [], categories: [], reference: [], tab: 'overview' };
+}
 async function handleChangePassword() {
   const newPw = document.getElementById('pw-new').value;
   const confirmPw = document.getElementById('pw-confirm').value;
   if (newPw.length < 6) { state.pwMsg = { ok: false, text: 'Mật khẩu phải có ít nhất 6 ký tự.' }; render(); return; }
   if (newPw !== confirmPw) { state.pwMsg = { ok: false, text: 'Hai mật khẩu nhập không khớp nhau.' }; render(); return; }
   const { error } = await sb.auth.updateUser({ password: newPw });
-  if (error) { state.pwMsg = { ok: false, text: 'Lỗi: ' + error.message }; render(); return; }
-  state.pwMsg = { ok: true, text: 'Đổi mật khẩu thành công.' };
+  state.pwMsg = error ? { ok: false, text: 'Lỗi: ' + error.message } : { ok: true, text: 'Đổi mật khẩu thành công.' };
   render();
-}
-
-async function logout() {
-  await sb.auth.signOut();
-  state = { user: null, role: 'viewer', categories: [], periods: [], details: [], tab: 'overview', quarterFilter: 'ALL' };
 }
 
 // ---------------------------------------------------------------
 // DATA LOADING
 // ---------------------------------------------------------------
 async function loadAll() {
-  const [{ data: cats }, { data: pers }, { data: dets }, { data: refs }, { data: deps }] = await Promise.all([
-    sb.from('bhyt_categories').select('*').order('code'),
+  const [{ data: lines }, { data: pers }, { data: cats }, { data: refs }] = await Promise.all([
+    sb.from('bhyt_lines').select('*'),
     sb.from('bhyt_periods').select('*').order('year').order('quarter'),
-    sb.from('bhyt_details').select('*'),
+    sb.from('bhyt_categories').select('*').order('code'),
     sb.from('bhyt_reference').select('*').order('phu_luc').order('stt'),
-    sb.from('bhyt_departments').select('*').order('name'),
   ]);
-  state.categories = cats || [];
+  state.lines = lines || [];
   state.periods = pers || [];
-  state.details = dets || [];
+  state.categories = cats || [];
   state.reference = refs || [];
-  state.departments = deps || [];
 }
 
 // ---------------------------------------------------------------
-// DERIVED DATA
+// DERIVED DATA — core aggregates
 // ---------------------------------------------------------------
+function quarterList() {
+  return state.periods.map((p) => ({ quarter: p.quarter, year: p.year, revenue: p.revenue || 0, key: qKey(p.quarter, p.year) }))
+    .sort((a, b) => a.year - b.year || QUARTERS.indexOf(a.quarter) - QUARTERS.indexOf(b.quarter));
+}
 function quarterSummaries() {
-  return state.periods.map((p) => {
-    const rows = state.details.filter((d) => d.quarter === p.quarter && d.year === p.year);
-    const finalizedCost = rows.reduce((s, r) => s + (r.finalized_cost || 0), 0);
-    const notifiedCost = rows.reduce((s, r) => s + (r.notified_cost || 0), 0);
-    const notified = rows.reduce((s, r) => s + (r.notified || 0), 0);
-    const finalized = rows.reduce((s, r) => s + (r.finalized || 0), 0);
+  const qs = quarterList();
+  return qs.map((p) => {
+    const rows = state.lines.filter((l) => l.quarter === p.quarter && l.year === p.year);
+    const finalizedCost = rows.reduce((s, r) => s + (r.cost || 0), 0);
     return {
-      key: qKey(p.quarter, p.year), label: `${p.quarter}/${p.year}`, quarter: p.quarter, year: p.year,
-      revenue: p.revenue || 0, finalizedCost, notifiedCost, notified, finalized,
+      key: p.key, label: `${p.quarter}/${p.year}`, quarter: p.quarter, year: p.year,
+      revenue: p.revenue, finalizedCost, lineCount: rows.length,
       rateVsRevenue: p.revenue ? finalizedCost / p.revenue : null,
-      explainByCount: notified ? (notified - finalized) / notified : null,
-      explainByCost: notifiedCost ? (notifiedCost - finalizedCost) / notifiedCost : null,
     };
-  }).sort((a, b) => a.year - b.year || QUARTERS.indexOf(a.quarter) - QUARTERS.indexOf(b.quarter));
-}
-
-function grandTotal(qs) {
-  const revenue = qs.reduce((s, q) => s + q.revenue, 0);
-  const finalizedCost = qs.reduce((s, q) => s + q.finalizedCost, 0);
-  const notifiedCost = qs.reduce((s, q) => s + q.notifiedCost, 0);
-  const notified = qs.reduce((s, q) => s + q.notified, 0);
-  const finalized = qs.reduce((s, q) => s + q.finalized, 0);
-  return {
-    finalizedCost, rateVsRevenue: revenue ? finalizedCost / revenue : null,
-    explainByCount: notified ? (notified - finalized) / notified : null,
-    explainByCost: notifiedCost ? (notifiedCost - finalizedCost) / notifiedCost : null,
-    notified, finalized,
-  };
-}
-
-function categorySummaries() {
-  const byCode = new Map();
-  state.categories.forEach((c) => byCode.set(c.code, { code: c.code, name: c.name, quarterCount: 0, finalizedCost: 0, finalized: 0 }));
-  state.details.forEach((d) => {
-    if (!byCode.has(d.code)) byCode.set(d.code, { code: d.code, name: '(chưa khai báo)', quarterCount: 0, finalizedCost: 0, finalized: 0 });
-    const rec = byCode.get(d.code);
-    rec.quarterCount += 1;
-    rec.finalizedCost += d.finalized_cost || 0;
-    rec.finalized += d.finalized || 0;
   });
-  return Array.from(byCode.values());
 }
+function availableYears() { return Array.from(new Set(state.periods.map((p) => p.year))).sort((a, b) => a - b); }
 
-// Thống kê theo khoa: mỗi khoa dính bao nhiêu chuyên đề khác nhau, và chuyên đề nào bị lặp lại
-function departmentSummaries() {
-  const byDept = new Map();
-  state.departments.forEach((d) => byDept.set(d.name, { name: d.name, totalRows: 0, personalCause: 0, systemCause: 0, byCode: new Map() }));
-  state.details.forEach((d) => {
-    (d.departments || []).forEach((deptName) => {
-      if (!byDept.has(deptName)) byDept.set(deptName, { name: deptName, totalRows: 0, personalCause: 0, systemCause: 0, byCode: new Map() });
-      const rec = byDept.get(deptName);
-      rec.totalRows += 1;
-      if (d.cause === 'Lỗi cá nhân') rec.personalCause += 1;
-      if (d.cause === 'Lỗi hệ thống') rec.systemCause += 1;
-      rec.byCode.set(d.code, (rec.byCode.get(d.code) || 0) + 1);
-    });
-  });
-  return Array.from(byDept.values()).map((r) => ({
-    ...r,
-    distinctCodeCount: r.byCode.size,
-    repeatedCodes: Array.from(r.byCode.entries()).filter(([, c]) => c > 1).sort((a, b) => b[1] - a[1]),
-    allCodes: Array.from(r.byCode.entries()).sort((a, b) => b[1] - a[1]),
-  }));
-}
-
-function categoryGroupOf(code) {
-  const c = state.categories.find((x) => x.code === code);
-  return (c && c.category_group) ? c.category_group : '(chưa phân nhóm)';
-}
-
-function availableYears() {
-  return Array.from(new Set(state.periods.map((p) => p.year))).sort((a, b) => a - b);
-}
-
-// Trả về danh sách quarterSummaries đã lọc theo dashYear/dashQuarter
 function filteredQuarterSummaries() {
   let qs = quarterSummaries();
   if (state.dashYear !== 'ALL') qs = qs.filter((q) => q.year === Number(state.dashYear));
   if (state.dashQuarter !== 'ALL') qs = qs.filter((q) => q.quarter === state.dashQuarter);
   return qs;
 }
-
-// Xác định kỳ "hiện tại" (theo bộ lọc) và kỳ liền trước đó trong dòng thời gian đầy đủ
+function grandTotal(qs) {
+  const revenue = qs.reduce((s, q) => s + q.revenue, 0);
+  const finalizedCost = qs.reduce((s, q) => s + q.finalizedCost, 0);
+  const lineCount = qs.reduce((s, q) => s + q.lineCount, 0);
+  return { revenue, finalizedCost, lineCount, rateVsRevenue: revenue ? finalizedCost / revenue : null };
+}
 function currentAndPreviousPeriod() {
-  const all = quarterSummaries(); // đã sort theo thời gian tăng dần
-  if (all.length === 0) return { current: null, previous: null };
+  const all = quarterSummaries();
+  if (all.length === 0) return { current: null, previous: null, all, idx: -1 };
   const filtered = filteredQuarterSummaries();
   const current = filtered.length ? filtered[filtered.length - 1] : all[all.length - 1];
   const idx = all.findIndex((q) => q.key === current.key);
   const previous = idx > 0 ? all[idx - 1] : null;
-  return { current, previous };
+  return { current, previous, idx, all };
 }
 
-// Cảnh báo: chuyên đề MỚI (chưa từng gặp trước đây) vs LẶP LẠI (đã từng gặp ở kỳ trước đó)
-// trong kỳ "hiện tại", cộng tỉ lệ lỗi cá nhân/hệ thống của kỳ đó.
-function currentPeriodAlerts() {
-  const all = quarterSummaries();
-  const { current } = currentAndPreviousPeriod();
-  if (!current) return null;
-  const idx = all.findIndex((q) => q.key === current.key);
-  const priorKeys = new Set(all.slice(0, idx).map((q) => q.key));
-  const priorCodes = new Set(state.details.filter((d) => priorKeys.has(qKey(d.quarter, d.year))).map((d) => d.code));
-  const currentRows = state.details.filter((d) => qKey(d.quarter, d.year) === current.key);
-  const currentCodes = Array.from(new Set(currentRows.map((d) => d.code)));
-  const nameOf = (code) => { const c = state.categories.find((x) => x.code === code); return c ? c.name : ''; };
-  const newCodes = currentCodes.filter((c) => !priorCodes.has(c)).map((c) => ({ code: c, name: nameOf(c) }));
-  const repeatedCodes = currentCodes.filter((c) => priorCodes.has(c)).map((c) => ({ code: c, name: nameOf(c) }));
-  const causeCounts = {};
-  currentRows.forEach((d) => { const c = d.cause || 'Chưa xác định'; causeCounts[c] = (causeCounts[c] || 0) + 1; });
-  return { current, newCodes, repeatedCodes, causeCounts, totalRows: currentRows.length };
+function categoryNameOf(code) {
+  const c = state.categories.find((x) => x.code === code);
+  return c ? c.name : '';
+}
+function categoryGroupOf(code) {
+  const c = state.categories.find((x) => x.code === code);
+  return (c && c.category_group) ? c.category_group : '(chưa phân nhóm)';
+}
+
+function categorySummaries() {
+  const byCode = new Map();
+  state.lines.forEach((l) => {
+    if (!l.code) return;
+    if (!byCode.has(l.code)) byCode.set(l.code, { code: l.code, name: categoryNameOf(l.code) || l.error_desc || '', finalizedCost: 0, lineCount: 0, quarters: new Set() });
+    const rec = byCode.get(l.code);
+    rec.finalizedCost += l.cost || 0;
+    rec.lineCount += 1;
+    rec.quarters.add(qKey(l.quarter, l.year));
+  });
+  return Array.from(byCode.values()).map((r) => ({ ...r, quarterCount: r.quarters.size }));
 }
 
 function groupTotalsForQuarter(q) {
   if (!q) return {};
   const totals = {};
-  state.details.filter((d) => d.quarter === q.quarter && d.year === q.year).forEach((d) => {
-    const g = categoryGroupOf(d.code);
-    totals[g] = (totals[g] || 0) + (d.finalized_cost || 0);
+  state.lines.filter((l) => l.quarter === q.quarter && l.year === q.year).forEach((l) => {
+    const g = categoryGroupOf(l.code);
+    totals[g] = (totals[g] || 0) + (l.cost || 0);
   });
   return totals;
 }
 
-// Dữ liệu Pareto: top N chuyên đề theo chi phí hoặc theo số hồ sơ xuất toán,
-// phạm vi = "filtered" (theo bộ lọc năm/kỳ hiện tại) hoặc "cumulative" (toàn bộ)
+function currentPeriodAlerts() {
+  const { current, all, idx } = currentAndPreviousPeriod();
+  if (!current) return null;
+  const priorKeys = new Set(all.slice(0, idx).map((q) => q.key));
+  const priorCodes = new Set(state.lines.filter((l) => priorKeys.has(qKey(l.quarter, l.year))).map((l) => l.code));
+  const currentRows = state.lines.filter((l) => qKey(l.quarter, l.year) === current.key);
+  const currentCodes = Array.from(new Set(currentRows.map((l) => l.code)));
+  const newCodes = currentCodes.filter((c) => !priorCodes.has(c)).map((c) => ({ code: c, name: categoryNameOf(c) }));
+  const repeatedCodes = currentCodes.filter((c) => priorCodes.has(c)).map((c) => ({ code: c, name: categoryNameOf(c) }));
+  const causeCounts = {};
+  currentRows.forEach((l) => { const c = l.cause || 'Chưa xác định'; causeCounts[c] = (causeCounts[c] || 0) + 1; });
+  return { current, newCodes, repeatedCodes, causeCounts, totalRows: currentRows.length };
+}
+
 function paretoData(metric, scope, topN) {
-  let rows = state.details;
-  if (scope === 'filtered') {
-    if (state.dashYear !== 'ALL') rows = rows.filter((d) => d.year === Number(state.dashYear));
-    if (state.dashQuarter !== 'ALL') rows = rows.filter((d) => d.quarter === state.dashQuarter);
-  }
+  let rows = scope === 'filtered' ? scopedLines() : state.lines;
   const byCode = new Map();
-  rows.forEach((d) => {
-    if (!byCode.has(d.code)) byCode.set(d.code, { code: d.code, value: 0 });
-    byCode.get(d.code).value += metric === 'cost' ? (d.finalized_cost || 0) : (d.finalized || 0);
+  rows.forEach((l) => {
+    if (!l.code) return;
+    if (!byCode.has(l.code)) byCode.set(l.code, { code: l.code, value: 0 });
+    byCode.get(l.code).value += metric === 'cost' ? (l.cost || 0) : 1;
   });
   const sorted = Array.from(byCode.values()).filter((r) => r.value > 0).sort((a, b) => b.value - a.value).slice(0, topN);
   const total = Array.from(byCode.values()).reduce((s, r) => s + r.value, 0);
   let cum = 0;
-  return sorted.map((r) => {
-    cum += r.value;
-    return { ...r, cumPct: total ? (cum / total) * 100 : 0 };
-  });
+  return sorted.map((r) => { cum += r.value; return { ...r, cumPct: total ? (cum / total) * 100 : 0 }; });
+}
+
+function khoaNormalizer() { return buildNormalizer(state.lines.map((l) => l.department)); }
+function bacSiNormalizer() { return buildNormalizer(state.lines.map((l) => l.individual)); }
+function khoaList() { const n = khoaNormalizer(); return Array.from(new Set(state.lines.map((l) => n(l.department)).filter(Boolean))).sort(); }
+function bacSiList() { const n = bacSiNormalizer(); return Array.from(new Set(state.lines.map((l) => n(l.individual)).filter(Boolean))).sort(); }
+function nhomList() { return Array.from(new Set(state.categories.map((c) => c.category_group).filter(Boolean))).sort(); }
+
+// Áp dụng toàn bộ bộ lọc (năm/kỳ/khoa/bác sĩ/nhóm lỗi) lên danh sách dòng dữ liệu gốc
+function scopedLines() {
+  const nKhoa = khoaNormalizer(), nBacSi = bacSiNormalizer();
+  let rows = state.lines;
+  if (state.dashYear !== 'ALL') rows = rows.filter((l) => l.year === Number(state.dashYear));
+  if (state.dashQuarter !== 'ALL') rows = rows.filter((l) => l.quarter === state.dashQuarter);
+  if (state.filterKhoa !== 'ALL') rows = rows.filter((l) => nKhoa(l.department) === state.filterKhoa);
+  if (state.filterBacSi !== 'ALL') rows = rows.filter((l) => nBacSi(l.individual) === state.filterBacSi);
+  if (state.filterNhom !== 'ALL') rows = rows.filter((l) => categoryGroupOf(l.code) === state.filterNhom);
+  return rows;
+}
+function scopedTotals() {
+  const rows = scopedLines();
+  const finalizedCost = rows.reduce((s, r) => s + (r.cost || 0), 0);
+  const lineCount = rows.length;
+  let revenue = filteredQuarterSummaries().reduce((s, q) => s + q.revenue, 0);
+  return { finalizedCost, lineCount, revenue, rateVsRevenue: revenue ? finalizedCost / revenue : null };
 }
 
 // ---------------------------------------------------------------
-// MAIN RENDER
+// DERIVED DATA — Khoa / Cá nhân heatmap
+// ---------------------------------------------------------------
+function heatmapData(mode, axis, metric) {
+  const field = mode === 'department' ? 'department' : 'individual';
+  const normalize = buildNormalizer(state.lines.map((l) => l[field]));
+  const rows = state.lines.map((l) => ({ ...l, _entity: normalize(l[field]) })).filter((l) => l._entity);
+
+  const entities = Array.from(new Set(rows.map((r) => r._entity)));
+  const axisKeys = axis === 'quarter'
+    ? quarterSummaries().map((q) => q.key)
+    : Array.from(new Set(rows.map((r) => r.code).filter(Boolean)));
+  const axisLabels = axis === 'quarter'
+    ? quarterSummaries().map((q) => q.label)
+    : axisKeys.map((c) => c);
+
+  const matrix = entities.map((ent) => {
+    const rowVals = axisKeys.map((ak) => {
+      const subset = rows.filter((r) => r._entity === ent && (axis === 'quarter' ? qKey(r.quarter, r.year) === ak : r.code === ak));
+      return metric === 'cost' ? subset.reduce((s, r) => s + (r.cost || 0), 0) : subset.length;
+    });
+    const total = rowVals.reduce((s, v) => s + v, 0);
+    const quarterCount = new Set(rows.filter((r) => r._entity === ent).map((r) => qKey(r.quarter, r.year))).size;
+    return { entity: ent, values: rowVals, total, quarterCount };
+  }).sort((a, b) => b.total - a.total);
+
+  return { entities: matrix, axisKeys, axisLabels };
+}
+
+// ---------------------------------------------------------------
+// DERIVED DATA — Risk Score
+// ---------------------------------------------------------------
+function riskScoreForQuarter(qKeyStr) {
+  const q = quarterSummaries().find((x) => x.key === qKeyStr);
+  if (!q) return [];
+  const rows = state.lines.filter((l) => qKey(l.quarter, l.year) === qKeyStr && l.code);
+  const totalCost = rows.reduce((s, r) => s + (r.cost || 0), 0);
+  const totalLines = rows.length;
+  const allQuarterKeys = quarterSummaries().map((x) => x.key);
+  const totalPeriods = allQuarterKeys.length;
+  const idxCurrent = allQuarterKeys.indexOf(qKeyStr);
+
+  const byCode = new Map();
+  rows.forEach((l) => {
+    if (!byCode.has(l.code)) byCode.set(l.code, { code: l.code, name: categoryNameOf(l.code), cost: 0, lines: 0 });
+    const rec = byCode.get(l.code);
+    rec.cost += l.cost || 0;
+    rec.lines += 1;
+  });
+
+  return Array.from(byCode.values()).map((rec) => {
+    const moneyScore = totalCost ? (rec.cost / totalCost) * 100 : 0;
+    const freqScore = totalLines ? (rec.lines / totalLines) * 100 : 0;
+    const periodsWithCode = new Set(state.lines.filter((l) => l.code === rec.code).map((l) => qKey(l.quarter, l.year))).size;
+    const recurScore = totalPeriods ? (periodsWithCode / totalPeriods) * 100 : 0;
+
+    let trendScore = 0;
+    if (idxCurrent >= 3) {
+      const priorKeys = allQuarterKeys.slice(idxCurrent - 3, idxCurrent);
+      const priorCosts = priorKeys.map((pk) => state.lines.filter((l) => l.code === rec.code && qKey(l.quarter, l.year) === pk).reduce((s, l) => s + (l.cost || 0), 0));
+      const avgPrior = priorCosts.reduce((s, v) => s + v, 0) / 3;
+      if (avgPrior > 0) trendScore = Math.min(100, Math.max(0, ((rec.cost / avgPrior) - 1) * 100));
+    }
+
+    const score = 0.4 * moneyScore + 0.3 * freqScore + 0.2 * recurScore + 0.1 * trendScore;
+    let level = 'green';
+    if (score >= 80) level = 'red'; else if (score >= 60) level = 'yellow';
+    return { ...rec, moneyScore, freqScore, recurScore, trendScore, score, level };
+  }).sort((a, b) => b.score - a.score);
+}
+// ---------------------------------------------------------------
+// MAIN RENDER SHELL
 // ---------------------------------------------------------------
 function render() {
   const canEdit = state.role === 'editor';
@@ -342,16 +400,17 @@ function render() {
           <button id="btn-logout" class="border border-blue-600 rounded-md px-3 py-2 text-sm font-medium text-blue-100 hover:bg-blue-800">Đăng xuất</button>
         </div>
       </div>
-      <div class="max-w-7xl mx-auto px-6 flex gap-1 border-t border-blue-800">
+      <div id="import-msg"></div>
+      <div class="max-w-7xl mx-auto px-6 flex gap-1 border-t border-blue-800 flex-wrap">
         ${tabBtn('overview', 'Tổng quan')}
         ${tabBtn('details', 'Chi tiết xuất toán')}
-        ${tabBtn('departments', 'Thống kê theo khoa')}
+        ${tabBtn('heatmap', 'Khoa & Cá nhân')}
+        ${tabBtn('risk', 'Risk Score')}
         ${tabBtn('setup', 'Kỳ & Danh mục')}
         ${tabBtn('reference', 'Tra cứu chuyên đề')}
         ${tabBtn('guide', 'Hướng dẫn')}
       </div>
     </div>
-    <div id="import-msg"></div>
     <div class="max-w-7xl mx-auto px-6 py-6" id="tab-content"></div>
   `;
   document.getElementById('btn-logout').onclick = async () => { await logout(); };
@@ -372,10 +431,14 @@ function tabBtn(id, label) {
 
 function renderTab() {
   const el = document.getElementById('tab-content');
-  if (state.tab === 'overview') el.innerHTML = overviewHTML();
+  if (state.lines.length === 0 && state.periods.length === 0 && state.tab !== 'guide' && state.tab !== 'reference' && state.tab !== 'setup') {
+    el.innerHTML = `<div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3 mb-4 text-sm">Chưa có dữ liệu. Import file Excel hoặc thêm dữ liệu ở tab "Kỳ & Danh mục" / "Chi tiết xuất toán".</div>`;
+  }
+  if (state.tab === 'overview') el.innerHTML += overviewHTML();
   if (state.tab === 'details') el.innerHTML = detailsHTML();
+  if (state.tab === 'heatmap') el.innerHTML = heatmapHTML();
+  if (state.tab === 'risk') el.innerHTML = riskHTML();
   if (state.tab === 'setup') el.innerHTML = setupHTML();
-  if (state.tab === 'departments') el.innerHTML = departmentsHTML();
   if (state.tab === 'reference') el.innerHTML = referenceHTML();
   if (state.tab === 'guide') el.innerHTML = guideHTML();
   attachTabEvents();
@@ -385,6 +448,19 @@ function renderTab() {
 // ---------------------------------------------------------------
 // OVERVIEW TAB
 // ---------------------------------------------------------------
+function statCard(label, value, tone, sub) {
+  const toneMap = {
+    slate: 'bg-white border-slate-200 text-slate-900', red: 'bg-red-50 border-red-200 text-red-700',
+    emerald: 'bg-emerald-50 border-emerald-200 text-emerald-700', blue: 'bg-blue-50 border-blue-200 text-blue-800',
+  };
+  return `<div class="rounded-lg border p-4 ${toneMap[tone]}"><div class="text-xs font-medium uppercase opacity-70">${label}</div><div class="text-2xl font-semibold mt-1.5">${value}</div>${sub ? `<div class="text-xs mt-1 opacity-70">${sub}</div>` : ''}</div>`;
+}
+function simpleTable(headers, rows) {
+  if (rows.length === 0) return '<div class="text-sm text-slate-400 py-6 text-center">Chưa có dữ liệu</div>';
+  return `<table class="w-full text-sm"><thead><tr class="text-left text-slate-500 border-b border-slate-200">${headers.map((h) => `<th class="py-1.5 font-medium">${h}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map((r) => `<tr class="border-b border-slate-100">${r.map((c) => `<td class="py-1.5">${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+
 function alertsHTML(alerts) {
   const { current, newCodes, repeatedCodes, causeCounts, totalRows } = alerts;
   const causeEntries = Object.entries(causeCounts).sort((a, b) => b[1] - a[1]);
@@ -418,15 +494,13 @@ function alertsHTML(alerts) {
 
 function overviewHTML() {
   const years = availableYears();
-  const qsAll = quarterSummaries();
-  const qsChart = state.dashYear === 'ALL' ? qsAll : qsAll.filter((q) => q.year === Number(state.dashYear));
-  const gt = grandTotal(filteredQuarterSummaries());
+  const st = scopedTotals();
   const cats = categorySummaries();
   const topRepeated = [...cats].filter((c) => c.quarterCount > 0).sort((a, b) => b.quarterCount - a.quarterCount).slice(0, 10);
-
   const { current, previous } = currentAndPreviousPeriod();
   const trendPct = (previous && previous.finalizedCost) ? ((current.finalizedCost - previous.finalizedCost) / previous.finalizedCost) * 100 : null;
   const alerts = currentPeriodAlerts();
+  const vsTarget = st.rateVsRevenue !== null ? (st.rateVsRevenue - TARGET_RATE) * 100 : null;
 
   return `
     ${alerts ? alertsHTML(alerts) : ''}
@@ -440,19 +514,31 @@ function overviewHTML() {
         <option value="ALL" ${state.dashQuarter === 'ALL' ? 'selected' : ''}>Tất cả các kỳ</option>
         ${QUARTERS.map((q) => `<option value="${q}" ${state.dashQuarter === q ? 'selected' : ''}>${q}</option>`).join('')}
       </select>
-      <span class="text-xs text-slate-400">Áp dụng cho các thẻ số liệu, biểu đồ Pareto bên dưới</span>
+      <select id="filter-khoa" class="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+        <option value="ALL">Khoa: Tất cả</option>
+        ${khoaList().map((k) => `<option value="${escapeHtml(k)}" ${state.filterKhoa === k ? 'selected' : ''}>${escapeHtml(k)}</option>`).join('')}
+      </select>
+      <select id="filter-bacsi" class="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+        <option value="ALL">Người thực hiện: Tất cả</option>
+        ${bacSiList().map((k) => `<option value="${escapeHtml(k)}" ${state.filterBacSi === k ? 'selected' : ''}>${escapeHtml(k)}</option>`).join('')}
+      </select>
+      <select id="filter-nhom" class="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+        <option value="ALL">Nhóm lỗi: Tất cả</option>
+        ${nhomList().map((k) => `<option value="${escapeHtml(k)}" ${state.filterNhom === k ? 'selected' : ''}>${escapeHtml(k)}</option>`).join('')}
+      </select>
+      <span class="text-xs text-slate-400">Áp dụng cho thẻ số liệu và Pareto bên dưới</span>
     </div>
 
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-      ${statCard('Tổng chi phí xuất toán luỹ kế', fmtVND(gt.finalizedCost) + ' đ', 'red')}
-      ${statCard('Tỉ lệ xuất toán/doanh thu (TB)', fmtPct(gt.rateVsRevenue), 'blue')}
-      ${statCard('Giải trình thành công (hồ sơ)', fmtPct(gt.explainByCount), 'emerald')}
-      ${statCard('Giải trình thành công (tiền)', fmtPct(gt.explainByCost), 'emerald')}
+      ${statCard('Tổng chi phí xuất toán', fmtVND(st.finalizedCost) + ' đ', 'red')}
+      ${statCard('Tổng số hồ sơ xuất toán', st.lineCount.toLocaleString('vi-VN'), 'emerald')}
+      ${statCard('Tỉ lệ xuất toán/doanh thu', fmtPct(st.rateVsRevenue), 'blue')}
+      ${statCard('Mục tiêu ≤ ' + fmtPct(TARGET_RATE), vsTarget === null ? '—' : (vsTarget > 0 ? `Cao hơn ${vsTarget.toFixed(2)}%` : `Thấp hơn ${Math.abs(vsTarget).toFixed(2)}%`), vsTarget === null ? 'slate' : (vsTarget > 0 ? 'red' : 'emerald'))}
     </div>
 
     <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
       <h3 class="text-sm font-semibold text-slate-700 mb-3">Chi phí xuất toán &amp; tỉ lệ theo quý</h3>
-      ${qsChart.length === 0 ? '<div class="text-sm text-slate-400 py-8 text-center">Chưa có dữ liệu</div>' : '<canvas id="quarter-chart" height="90"></canvas>'}
+      <canvas id="quarter-chart" height="90"></canvas>
     </div>
 
     <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
@@ -465,22 +551,13 @@ function overviewHTML() {
 
     <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
       <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
-        <h3 class="text-sm font-semibold text-slate-700">Pareto: 10 chuyên đề xuất toán nhiều nhất</h3>
+        <h3 class="text-sm font-semibold text-slate-700">Pareto: 10 chuyên đề xuất toán nhiều chi phí nhất</h3>
         <div class="flex text-xs rounded-md border border-slate-300 overflow-hidden">
-          <button data-pareto-scope="filtered" class="px-3 py-1.5 ${state.paretoScope === 'filtered' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Theo kỳ đang lọc</button>
+          <button data-pareto-scope="filtered" class="px-3 py-1.5 ${state.paretoScope === 'filtered' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Theo bộ lọc</button>
           <button data-pareto-scope="cumulative" class="px-3 py-1.5 ${state.paretoScope === 'cumulative' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Luỹ kế toàn bộ</button>
         </div>
       </div>
-      <div class="grid md:grid-cols-2 gap-6">
-        <div>
-          <div class="text-xs font-medium text-slate-500 uppercase mb-2">Theo chi phí xuất toán</div>
-          <canvas id="pareto-cost-chart" height="220"></canvas>
-        </div>
-        <div>
-          <div class="text-xs font-medium text-slate-500 uppercase mb-2">Theo số hồ sơ xuất toán</div>
-          <canvas id="pareto-count-chart" height="220"></canvas>
-        </div>
-      </div>
+      <canvas id="pareto-cost-chart" height="220"></canvas>
     </div>
 
     <div class="bg-white border border-slate-200 rounded-lg p-4">
@@ -490,20 +567,8 @@ function overviewHTML() {
   `;
 }
 
-function statCard(label, value, tone) {
-  const toneMap = { red: 'bg-red-50 border-red-200 text-red-700', blue: 'bg-blue-50 border-blue-200 text-blue-800', emerald: 'bg-emerald-50 border-emerald-200 text-emerald-700' };
-  return `<div class="rounded-lg border p-4 ${toneMap[tone]}"><div class="text-xs font-medium uppercase opacity-70">${label}</div><div class="text-2xl font-semibold mt-1.5">${value}</div></div>`;
-}
-
-function simpleTable(headers, rows) {
-  if (rows.length === 0) return '<div class="text-sm text-slate-400 py-6 text-center">Chưa có dữ liệu</div>';
-  return `<table class="w-full text-sm"><thead><tr class="text-left text-slate-500 border-b border-slate-200">${headers.map((h) => `<th class="py-1.5 font-medium">${h}</th>`).join('')}</tr></thead>
-    <tbody>${rows.map((r) => `<tr class="border-b border-slate-100">${r.map((c) => `<td class="py-1.5">${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
-}
-
 function drawChart() {
-  const qsAll = quarterSummaries();
-  const qs = state.dashYear === 'ALL' ? qsAll : qsAll.filter((q) => q.year === Number(state.dashYear));
+  const qs = quarterSummaries();
   if (qs.length === 0) return;
   const ctx = document.getElementById('quarter-chart');
   if (!ctx) return;
@@ -517,16 +582,12 @@ function drawChart() {
         { type: 'line', label: 'Tỉ lệ xuất toán (%)', data: qs.map((q) => q.rateVsRevenue !== null ? +(q.rateVsRevenue * 100).toFixed(2) : 0), borderColor: '#1e3a8a', yAxisID: 'y1', tension: 0.3 },
       ],
     },
-    options: {
-      responsive: true,
-      scales: {
-        y: { position: 'left', title: { display: true, text: 'triệu đ' } },
-        y1: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: '%' } },
-      },
-    },
+    options: { responsive: true, scales: {
+      y: { position: 'left', title: { display: true, text: 'triệu đ' } },
+      y1: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: '%' } },
+    } },
   });
 }
-
 function drawTrendChart() {
   const { current, previous } = currentAndPreviousPeriod();
   const ctx = document.getElementById('trend-chart');
@@ -537,119 +598,214 @@ function drawTrendChart() {
   if (state.trendChartRef) state.trendChartRef.destroy();
   state.trendChartRef = new Chart(ctx, {
     type: 'bar',
-    data: {
-      labels: groups,
-      datasets: [
-        { label: `${previous.label} (tr đ)`, data: groups.map((g) => Math.round((prevTotals[g] || 0) / 1e6)), backgroundColor: '#cbd5e1' },
-        { label: `${current.label} (tr đ)`, data: groups.map((g) => Math.round((curTotals[g] || 0) / 1e6)), backgroundColor: '#dc2626' },
-      ],
-    },
+    data: { labels: groups, datasets: [
+      { label: `${previous.label} (tr đ)`, data: groups.map((g) => Math.round((prevTotals[g] || 0) / 1e6)), backgroundColor: '#cbd5e1' },
+      { label: `${current.label} (tr đ)`, data: groups.map((g) => Math.round((curTotals[g] || 0) / 1e6)), backgroundColor: '#dc2626' },
+    ] },
     options: { responsive: true, scales: { y: { title: { display: true, text: 'triệu đ' } } } },
   });
 }
-
 function drawParetoCharts() {
-  drawParetoOne('pareto-cost-chart', 'paretoCostChartRef', 'cost', '#dc2626', 'triệu đ', (v) => Math.round(v / 1e6));
-  drawParetoOne('pareto-count-chart', 'paretoCountChartRef', 'count', '#1e3a8a', 'hồ sơ', (v) => v);
-}
-
-function drawParetoOne(canvasId, refKey, metric, color, unitLabel, transform) {
-  const ctx = document.getElementById(canvasId);
+  const ctx = document.getElementById('pareto-cost-chart');
   if (!ctx) return;
-  const data = paretoData(metric, state.paretoScope, 10);
-  if (state[refKey]) state[refKey].destroy();
-  if (data.length === 0) { state[refKey] = null; return; }
-  state[refKey] = new Chart(ctx, {
+  const data = paretoData('cost', state.paretoScope, 10);
+  if (state.paretoCostChartRef) state.paretoCostChartRef.destroy();
+  if (data.length === 0) return;
+  state.paretoCostChartRef = new Chart(ctx, {
     data: {
       labels: data.map((d) => d.code),
       datasets: [
-        { type: 'bar', label: unitLabel, data: data.map((d) => transform(d.value)), backgroundColor: color, yAxisID: 'y' },
+        { type: 'bar', label: 'triệu đ', data: data.map((d) => Math.round(d.value / 1e6)), backgroundColor: '#dc2626', yAxisID: 'y' },
         { type: 'line', label: '% luỹ kế', data: data.map((d) => +d.cumPct.toFixed(1)), borderColor: '#f59e0b', yAxisID: 'y1', tension: 0.2 },
       ],
     },
-    options: {
-      responsive: true,
-      scales: {
-        y: { position: 'left', title: { display: true, text: unitLabel } },
-        y1: { position: 'right', min: 0, max: 100, grid: { drawOnChartArea: false }, title: { display: true, text: '% luỹ kế' } },
-      },
-    },
+    options: { responsive: true, scales: {
+      y: { position: 'left', title: { display: true, text: 'triệu đ' } },
+      y1: { position: 'right', min: 0, max: 100, grid: { drawOnChartArea: false }, title: { display: true, text: '% luỹ kế' } },
+    } },
   });
 }
-
-function drawAllOverviewCharts() {
-  drawChart();
-  drawTrendChart();
-  drawParetoCharts();
-}
+function drawAllOverviewCharts() { drawChart(); drawTrendChart(); drawParetoCharts(); }
 
 // ---------------------------------------------------------------
-// DETAILS TAB (editable)
+// DETAILS TAB (editable lines table)
 // ---------------------------------------------------------------
 function detailsHTML() {
   const canEdit = state.role === 'editor';
   const qs = quarterSummaries();
-  let rows = state.details;
-  if (state.quarterFilter !== 'ALL') rows = rows.filter((d) => qKey(d.quarter, d.year) === state.quarterFilter);
-  rows = [...rows].sort((a, b) => (b.finalized_cost || 0) - (a.finalized_cost || 0));
+  let rows = state.lines;
+  if (state.quarterFilter !== 'ALL') rows = rows.filter((l) => qKey(l.quarter, l.year) === state.quarterFilter);
+  rows = [...rows].sort((a, b) => (b.cost || 0) - (a.cost || 0));
 
   return `
     <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
       <div class="flex items-center gap-2">
         <label class="text-sm text-slate-600">Xem theo kỳ:</label>
         <select id="quarter-filter" class="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
-          <option value="ALL" ${state.quarterFilter === 'ALL' ? 'selected' : ''}>Tất cả (xếp theo chi phí xuất toán)</option>
+          <option value="ALL" ${state.quarterFilter === 'ALL' ? 'selected' : ''}>Tất cả (xếp theo chi phí)</option>
           ${qs.map((q) => `<option value="${q.key}" ${state.quarterFilter === q.key ? 'selected' : ''}>${q.label}</option>`).join('')}
         </select>
       </div>
-      ${canEdit ? '<button id="btn-add-detail" class="bg-blue-900 text-white rounded-md px-3 py-1.5 text-sm font-medium hover:bg-blue-800">+ Thêm dòng</button>' : ''}
+      <div class="flex items-center gap-2">
+        <span class="text-xs text-slate-400">${rows.length} dòng</span>
+        ${canEdit ? '<button id="btn-add-line" class="bg-blue-900 text-white rounded-md px-3 py-1.5 text-sm font-medium hover:bg-blue-800">+ Thêm dòng</button>' : ''}
+      </div>
     </div>
     <div class="bg-white border border-slate-200 rounded-lg overflow-x-auto">
-      <datalist id="responsible-list">${allResponsibles().map((n) => `<option value="${escapeHtml(n)}">`).join('')}</datalist>
-      <table class="w-full text-sm min-w-[1000px]">
+      <table class="w-full text-sm min-w-[1100px]">
         <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
           <tr>
-            <th class="text-left px-2 py-2">Quý</th><th class="text-left px-2 py-2">Năm</th><th class="text-left px-2 py-2">Mã</th>
-            <th class="text-right px-2 py-2">Số TB</th><th class="text-right px-2 py-2">Số XT</th>
-            <th class="text-right px-2 py-2">CP thông báo</th><th class="text-right px-2 py-2">CP xuất toán</th>
-            <th class="text-left px-2 py-2">Trạng thái</th><th class="text-left px-2 py-2">Nguyên nhân</th><th class="text-left px-2 py-2">Khoa vi phạm</th><th class="text-left px-2 py-2">Phụ trách khắc phục</th><th class="text-left px-2 py-2">Ghi chú</th><th></th>
+            <th class="text-left px-2 py-2">Quý</th><th class="text-left px-2 py-2">Năm</th>
+            <th class="text-left px-2 py-2">Người thực hiện/CĐ</th><th class="text-left px-2 py-2">Khoa</th>
+            <th class="text-right px-2 py-2">Chi phí</th><th class="text-left px-2 py-2">Dịch vụ</th>
+            <th class="text-left px-2 py-2">Lỗi</th><th class="text-left px-2 py-2">Phụ lục</th>
+            <th class="text-left px-2 py-2">Nguyên nhân</th><th></th>
           </tr>
         </thead>
         <tbody>
-          ${rows.map((r) => detailRow(r, canEdit)).join('')}
-          ${rows.length === 0 ? '<tr><td colspan="13" class="text-center text-slate-400 py-8">Chưa có dữ liệu</td></tr>' : ''}
+          ${rows.map((l) => lineRow(l, canEdit)).join('')}
+          ${rows.length === 0 ? '<tr><td colspan="10" class="text-center text-slate-400 py-8">Chưa có dữ liệu</td></tr>' : ''}
         </tbody>
       </table>
     </div>
   `;
 }
 
-function allResponsibles() {
-  return Array.from(new Set(state.details.map((d) => d.responsible).filter(Boolean))).sort();
-}
-
-function detailRow(r, canEdit) {
+function lineRow(l, canEdit) {
   const dis = canEdit ? '' : 'disabled';
   return `
-    <tr class="border-t border-slate-100" data-id="${r.id}">
-      <td class="px-2 py-1"><select ${dis} data-field="quarter" class="border border-slate-200 rounded px-1 py-1 w-16">${QUARTERS.map((q) => `<option ${q === r.quarter ? 'selected' : ''}>${q}</option>`).join('')}</select></td>
-      <td class="px-2 py-1"><input ${dis} type="number" data-field="year" value="${r.year}" class="border border-slate-200 rounded px-1 py-1 w-20" /></td>
-      <td class="px-2 py-1"><select ${dis} data-field="code" class="border border-slate-200 rounded px-1 py-1 w-32 font-mono">${state.categories.map((c) => `<option value="${c.code}" ${c.code === r.code ? 'selected' : ''}>${c.code}</option>`).join('')}</select></td>
-      <td class="px-2 py-1"><input ${dis} type="number" data-field="notified" value="${r.notified}" class="border border-slate-200 rounded px-1 py-1 w-16 text-right" /></td>
-      <td class="px-2 py-1"><input ${dis} type="number" data-field="finalized" value="${r.finalized}" class="border border-slate-200 rounded px-1 py-1 w-16 text-right" /></td>
-      <td class="px-2 py-1"><input ${dis} type="number" data-field="notified_cost" value="${r.notified_cost}" class="border border-slate-200 rounded px-1 py-1 w-28 text-right" /></td>
-      <td class="px-2 py-1"><input ${dis} type="number" data-field="finalized_cost" value="${r.finalized_cost}" class="border border-slate-200 rounded px-1 py-1 w-28 text-right" /></td>
-      <td class="px-2 py-1"><select ${dis} data-field="status" class="badge ${STATUS_CLASS[r.status] || ''}">${STATUS_OPTIONS.map((s) => `<option ${s === r.status ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
-      <td class="px-2 py-1"><select ${dis} data-field="cause" class="border border-slate-200 rounded px-1 py-1 w-28 text-xs"><option value="" ${!r.cause ? 'selected' : ''}>—</option>${CAUSE_OPTIONS.map((c) => `<option ${c === r.cause ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
-      <td class="px-2 py-1"><select ${dis} multiple data-field="departments" data-multi="true" size="3" class="border border-slate-200 rounded px-1 py-1 w-32 text-xs">${state.departments.map((d) => `<option value="${escapeHtml(d.name)}" ${(r.departments || []).includes(d.name) ? 'selected' : ''}>${escapeHtml(d.name)}</option>`).join('')}</select></td>
-      <td class="px-2 py-1"><input ${dis} type="text" list="responsible-list" data-field="responsible" value="${escapeHtml(r.responsible || '')}" class="border border-slate-200 rounded px-1 py-1 w-32" /></td>
-      <td class="px-2 py-1"><input ${dis} type="text" data-field="note" value="${r.note || ''}" class="border border-slate-200 rounded px-1 py-1 w-32" /></td>
-      <td class="px-2 py-1 text-center">${canEdit ? `<button data-del="${r.id}" class="text-slate-400 hover:text-red-600">✕</button>` : ''}</td>
+    <tr class="border-t border-slate-100 hover:bg-slate-50" data-id="${l.id}">
+      <td class="px-2 py-1"><select ${dis} data-field="quarter" class="border border-slate-200 rounded px-1 py-1 w-16">${QUARTERS.map((q) => `<option ${q === l.quarter ? 'selected' : ''}>${q}</option>`).join('')}</select></td>
+      <td class="px-2 py-1"><input ${dis} type="number" data-field="year" value="${l.year}" class="border border-slate-200 rounded px-1 py-1 w-20" /></td>
+      <td class="px-2 py-1"><input ${dis} type="text" data-field="individual" value="${escapeHtml(l.individual || '')}" class="border border-slate-200 rounded px-1 py-1 w-32" /></td>
+      <td class="px-2 py-1"><input ${dis} type="text" data-field="department" value="${escapeHtml(l.department || '')}" class="border border-slate-200 rounded px-1 py-1 w-28" /></td>
+      <td class="px-2 py-1"><input ${dis} type="number" data-field="cost" value="${l.cost || 0}" class="border border-slate-200 rounded px-1 py-1 w-28 text-right" /></td>
+      <td class="px-2 py-1"><input ${dis} type="text" data-field="service" value="${escapeHtml(l.service || '')}" class="border border-slate-200 rounded px-1 py-1 w-36" /></td>
+      <td class="px-2 py-1"><input ${dis} type="text" data-field="error_desc" value="${escapeHtml(l.error_desc || '')}" class="border border-slate-200 rounded px-1 py-1 w-40" /></td>
+      <td class="px-2 py-1"><input ${dis} type="text" data-field="code" value="${escapeHtml(l.code || '')}" class="border border-slate-200 rounded px-1 py-1 w-24 font-mono" /></td>
+      <td class="px-2 py-1"><select ${dis} data-field="cause" class="border border-slate-200 rounded px-1 py-1 w-24"><option value="">—</option>${CAUSE_OPTIONS.map((c) => `<option ${c === l.cause ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
+      <td class="px-2 py-1 text-center">${canEdit ? `<button data-del-line="${l.id}" class="text-slate-400 hover:text-red-600">✕</button>` : ''}</td>
     </tr>`;
 }
 
 // ---------------------------------------------------------------
-// SETUP TAB (periods + categories)
+// HEATMAP TAB (Khoa & Cá nhân)
+// ---------------------------------------------------------------
+function heatCellColor(value, max, metric) {
+  if (!max || value <= 0) return 'background-color:#f8fafc;color:#cbd5e1;';
+  const pct = Math.min(1, value / max);
+  const base = metric === 'cost' ? [220, 38, 38] : [30, 58, 138]; // red for cost, navy for count
+  const alpha = 0.12 + pct * 0.75;
+  return `background-color:rgba(${base[0]},${base[1]},${base[2]},${alpha.toFixed(2)});color:${pct > 0.55 ? '#fff' : '#1e293b'};`;
+}
+
+function heatmapHTML() {
+  const { entities, axisLabels } = heatmapData(state.heatmapMode, state.heatmapAxis, state.heatmapMetric);
+  const max = Math.max(1, ...entities.flatMap((e) => e.values));
+  const top10 = entities.slice(0, 10);
+
+  return `
+    <div class="bg-white border border-slate-200 rounded-lg p-3 mb-4 flex flex-wrap items-center gap-3">
+      <div class="flex text-xs rounded-md border border-slate-300 overflow-hidden">
+        <button data-hm="mode:department" class="px-3 py-1.5 ${state.heatmapMode === 'department' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Theo Khoa</button>
+        <button data-hm="mode:individual" class="px-3 py-1.5 ${state.heatmapMode === 'individual' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Theo Cá nhân</button>
+      </div>
+      <div class="flex text-xs rounded-md border border-slate-300 overflow-hidden">
+        <button data-hm="axis:quarter" class="px-3 py-1.5 ${state.heatmapAxis === 'quarter' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">× Quý</button>
+        <button data-hm="axis:code" class="px-3 py-1.5 ${state.heatmapAxis === 'code' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">× Chuyên đề</button>
+      </div>
+      <div class="flex text-xs rounded-md border border-slate-300 overflow-hidden">
+        <button data-hm="metric:cost" class="px-3 py-1.5 ${state.heatmapMetric === 'cost' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Theo chi phí</button>
+        <button data-hm="metric:count" class="px-3 py-1.5 ${state.heatmapMetric === 'count' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Theo số lượt</button>
+      </div>
+    </div>
+
+    <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6 overflow-x-auto">
+      <h3 class="text-sm font-semibold text-slate-700 mb-3">Heatmap ${state.heatmapMode === 'department' ? 'Khoa' : 'Cá nhân'} × ${state.heatmapAxis === 'quarter' ? 'Quý' : 'Chuyên đề'} (${state.heatmapMetric === 'cost' ? 'chi phí' : 'số lượt'})</h3>
+      ${entities.length === 0 ? '<div class="text-sm text-slate-400 py-8 text-center">Chưa có dữ liệu</div>' : `
+      <table class="text-xs border-collapse">
+        <thead><tr>
+          <th class="sticky left-0 bg-white text-left px-2 py-1.5 border-b border-slate-200">${state.heatmapMode === 'department' ? 'Khoa' : 'Cá nhân'}</th>
+          ${axisLabels.map((l) => `<th class="px-2 py-1.5 border-b border-slate-200 text-center">${escapeHtml(l)}</th>`).join('')}
+          <th class="px-2 py-1.5 border-b border-slate-200 text-center font-semibold">Tổng</th>
+        </tr></thead>
+        <tbody>
+          ${entities.map((e) => `
+            <tr>
+              <td class="sticky left-0 bg-white px-2 py-1.5 border-b border-slate-100 font-medium whitespace-nowrap">${escapeHtml(e.entity)}</td>
+              ${e.values.map((v) => `<td class="px-2 py-1.5 border-b border-slate-100 text-center" style="${heatCellColor(v, max, state.heatmapMetric)}">${v ? (state.heatmapMetric === 'cost' ? fmtVND(v) : v) : '—'}</td>`).join('')}
+              <td class="px-2 py-1.5 border-b border-slate-100 text-center font-semibold">${state.heatmapMetric === 'cost' ? fmtVND(e.total) : e.total}</td>
+            </tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-6">
+      <div class="bg-white border border-slate-200 rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-slate-700 mb-3">Top 10 ${state.heatmapMode === 'department' ? 'Khoa' : 'Cá nhân'} — lặp lại nhiều quý nhất</h3>
+        ${simpleTable(['Tên', 'Số quý xuất hiện'], [...top10].sort((a, b) => b.quarterCount - a.quarterCount).slice(0, 10).map((e) => [escapeHtml(e.entity), e.quarterCount]))}
+      </div>
+      <div class="bg-white border border-slate-200 rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-slate-700 mb-3">Top 10 ${state.heatmapMode === 'department' ? 'Khoa' : 'Cá nhân'} — chi phí cao nhất</h3>
+        ${simpleTable(['Tên', 'Tổng chi phí (đ)'], top10.map((e) => [escapeHtml(e.entity), fmtVND(e.total)]))}
+      </div>
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------
+// RISK SCORE TAB
+// ---------------------------------------------------------------
+function riskHTML() {
+  const qs = quarterSummaries();
+  if (qs.length === 0) return '<div class="text-sm text-slate-400 py-10 text-center bg-white border border-slate-200 rounded-lg">Chưa có dữ liệu</div>';
+  const qKeyStr = state.riskQuarterKey || qs[qs.length - 1].key;
+  const rows = riskScoreForQuarter(qKeyStr);
+  const lightMap = { red: '🔴', yellow: '🟡', green: '🟢' };
+  const rowBg = { red: 'bg-red-50', yellow: 'bg-amber-50', green: 'bg-emerald-50' };
+
+  return `
+    <div class="bg-white border border-slate-200 rounded-lg p-3 mb-4 flex flex-wrap items-center gap-3">
+      <span class="text-xs font-medium text-slate-500 uppercase">Kỳ đánh giá</span>
+      <select id="risk-quarter" class="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+        ${qs.map((q) => `<option value="${q.key}" ${qKeyStr === q.key ? 'selected' : ''}>${q.label}</option>`).join('')}
+      </select>
+      <span class="text-xs text-slate-400">Risk Score = 40%×Tỷ trọng tiền + 30%×Tần suất + 20%×Tái diễn + 10%×Xu hướng tăng</span>
+    </div>
+    <div class="bg-white border border-slate-200 rounded-lg overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
+          <tr>
+            <th class="text-left px-3 py-2">Mã</th><th class="text-left px-3 py-2">Tên</th>
+            <th class="text-right px-3 py-2">Tỷ trọng tiền</th><th class="text-right px-3 py-2">Tần suất</th>
+            <th class="text-right px-3 py-2">Tái diễn</th><th class="text-right px-3 py-2">Xu hướng</th>
+            <th class="text-right px-3 py-2">Risk Score</th><th class="text-center px-3 py-2">Mức</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((r) => `
+            <tr class="border-t border-slate-100 ${rowBg[r.level]}">
+              <td class="px-3 py-2 font-mono text-xs">${escapeHtml(r.code)}</td>
+              <td class="px-3 py-2">${escapeHtml(r.name)}</td>
+              <td class="px-3 py-2 text-right">${r.moneyScore.toFixed(0)}</td>
+              <td class="px-3 py-2 text-right">${r.freqScore.toFixed(0)}</td>
+              <td class="px-3 py-2 text-right">${r.recurScore.toFixed(0)}</td>
+              <td class="px-3 py-2 text-right">${r.trendScore.toFixed(0)}</td>
+              <td class="px-3 py-2 text-right font-semibold">${r.score.toFixed(0)}</td>
+              <td class="px-3 py-2 text-center text-lg">${lightMap[r.level]}</td>
+            </tr>`).join('')}
+          ${rows.length === 0 ? '<tr><td colspan="8" class="text-center text-slate-400 py-8">Chưa có dữ liệu cho kỳ này</td></tr>' : ''}
+        </tbody>
+      </table>
+    </div>
+    <div class="flex gap-4 mt-3 text-xs text-slate-500">
+      <span>🔴 ≥ 80: Ưu tiên can thiệp ngay</span><span>🟡 60–79: Theo dõi sát</span><span>🟢 &lt; 60: Duy trì kiểm soát</span>
+    </div>
+  `;
+}
+
+// ---------------------------------------------------------------
+// SETUP TAB (Doanh thu BHYT + Danh mục chuyên đề)
 // ---------------------------------------------------------------
 function setupHTML() {
   const canEdit = state.role === 'editor';
@@ -657,17 +813,17 @@ function setupHTML() {
     <div class="grid lg:grid-cols-2 gap-6">
       <div class="bg-white border border-slate-200 rounded-lg p-4">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-semibold text-slate-700">Kỳ giám định</h3>
+          <h3 class="text-sm font-semibold text-slate-700">Doanh thu BHYT theo quý</h3>
           ${canEdit ? '<button id="btn-add-period" class="text-blue-800 hover:text-blue-600 text-sm font-medium">+ Thêm kỳ</button>' : ''}
         </div>
         <table class="w-full text-sm">
           <thead class="text-xs text-slate-500 uppercase"><tr><th class="text-left py-1">Quý</th><th class="text-left py-1">Năm</th><th class="text-right py-1">Doanh thu (đ)</th><th></th></tr></thead>
           <tbody>
-            ${state.periods.map((p) => `
-              <tr class="border-t border-slate-100" data-id="${p.id}" data-kind="period">
-                <td class="py-1.5"><select ${canEdit ? '' : 'disabled'} data-field="quarter" class="border border-slate-200 rounded px-1 py-1 w-16">${QUARTERS.map((q) => `<option ${q === p.quarter ? 'selected' : ''}>${q}</option>`).join('')}</select></td>
-                <td class="py-1.5"><input ${canEdit ? '' : 'disabled'} type="number" data-field="year" value="${p.year}" class="border border-slate-200 rounded px-1 py-1 w-20" /></td>
-                <td class="py-1.5 text-right"><input ${canEdit ? '' : 'disabled'} type="number" data-field="revenue" value="${p.revenue}" class="border border-slate-200 rounded px-1 py-1 w-36 text-right" /></td>
+            ${state.periods.map((p, idx) => `
+              <tr class="border-t border-slate-100">
+                <td class="py-1.5"><select ${canEdit ? '' : 'disabled'} data-p-idx="${idx}" data-p-field="quarter" class="border border-slate-200 rounded px-1 py-1 w-16">${QUARTERS.map((q) => `<option ${q === p.quarter ? 'selected' : ''}>${q}</option>`).join('')}</select></td>
+                <td class="py-1.5"><input ${canEdit ? '' : 'disabled'} type="number" data-p-idx="${idx}" data-p-field="year" value="${p.year}" class="border border-slate-200 rounded px-1 py-1 w-20" /></td>
+                <td class="py-1.5 text-right"><input ${canEdit ? '' : 'disabled'} type="number" data-p-idx="${idx}" data-p-field="revenue" value="${p.revenue}" class="border border-slate-200 rounded px-1 py-1 w-36 text-right" /></td>
                 <td class="py-1.5 text-center">${canEdit ? `<button data-del-period="${p.id}" class="text-slate-400 hover:text-red-600">✕</button>` : ''}</td>
               </tr>`).join('')}
             ${state.periods.length === 0 ? '<tr><td colspan="4" class="text-center text-slate-400 py-6">Chưa có kỳ nào</td></tr>' : ''}
@@ -676,98 +832,31 @@ function setupHTML() {
       </div>
       <div class="bg-white border border-slate-200 rounded-lg p-4">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-semibold text-slate-700">Danh mục chuyên đề</h3>
+          <h3 class="text-sm font-semibold text-slate-700">Danh mục chuyên đề (map Phụ lục → Nhóm)</h3>
           ${canEdit ? '<button id="btn-add-category" class="text-blue-800 hover:text-blue-600 text-sm font-medium">+ Thêm mã</button>' : ''}
         </div>
         <table class="w-full text-sm">
-          <thead class="text-xs text-slate-500 uppercase"><tr><th class="text-left py-1">Mã</th><th class="text-left py-1">Tên chuyên đề</th><th class="text-left py-1">Nhóm</th><th></th></tr></thead>
+          <thead class="text-xs text-slate-500 uppercase"><tr><th class="text-left py-1">Mã</th><th class="text-left py-1">Tên</th><th class="text-left py-1">Nhóm</th><th></th></tr></thead>
           <tbody>
-            ${state.categories.map((c) => `
-              <tr class="border-t border-slate-100" data-code="${c.code}" data-kind="category">
-                <td class="py-1.5 font-mono">${c.code}</td>
-                <td class="py-1.5"><input ${canEdit ? '' : 'disabled'} type="text" data-field="name" value="${c.name || ''}" class="border border-slate-200 rounded px-1 py-1 w-full" /></td>
-                <td class="py-1.5"><input ${canEdit ? '' : 'disabled'} type="text" data-field="category_group" value="${c.category_group || ''}" class="border border-slate-200 rounded px-1 py-1 w-28" /></td>
+            ${state.categories.map((c, idx) => `
+              <tr class="border-t border-slate-100">
+                <td class="py-1.5"><input ${canEdit ? '' : 'disabled'} type="text" data-c-idx="${idx}" data-c-field="code" value="${escapeHtml(c.code)}" class="border border-slate-200 rounded px-1 py-1 w-24 font-mono" /></td>
+                <td class="py-1.5"><input ${canEdit ? '' : 'disabled'} type="text" data-c-idx="${idx}" data-c-field="name" value="${escapeHtml(c.name || '')}" class="border border-slate-200 rounded px-1 py-1 w-full" /></td>
+                <td class="py-1.5"><input ${canEdit ? '' : 'disabled'} type="text" data-c-idx="${idx}" data-c-field="category_group" value="${escapeHtml(c.category_group || '')}" class="border border-slate-200 rounded px-1 py-1 w-28" /></td>
                 <td class="py-1.5 text-center">${canEdit ? `<button data-del-category="${c.code}" class="text-slate-400 hover:text-red-600">✕</button>` : ''}</td>
               </tr>`).join('')}
             ${state.categories.length === 0 ? '<tr><td colspan="4" class="text-center text-slate-400 py-6">Chưa có mã nào</td></tr>' : ''}
           </tbody>
         </table>
-        ${canEdit ? `<div class="mt-3 pt-3 border-t border-slate-100 flex gap-2">
-          <input id="new-cat-code" placeholder="Mã mới (VD: DVT-002)" class="border border-slate-300 rounded px-2 py-1.5 text-sm flex-1" />
-          <button id="btn-quick-add-category" class="bg-blue-900 text-white rounded-md px-3 py-1.5 text-sm">Thêm</button>
-        </div>` : ''}
       </div>
     </div>
   `;
 }
 
-// ---------------------------------------------------------------
-// DEPARTMENTS TAB (Danh mục khoa + thống kê theo khoa)
-// ---------------------------------------------------------------
-function departmentsHTML() {
-  const canEdit = state.role === 'editor';
-  const stats = [...departmentSummaries()].sort((a, b) => b.distinctCodeCount - a.distinctCodeCount);
 
-  return `
-    <div class="grid lg:grid-cols-3 gap-6">
-      <div class="lg:col-span-1 bg-white border border-slate-200 rounded-lg p-4 h-fit">
-        <h3 class="text-sm font-semibold text-slate-700 mb-3">Danh mục khoa</h3>
-        <table class="w-full text-sm">
-          <tbody>
-            ${state.departments.map((d) => `
-              <tr class="border-t border-slate-100" data-dept-name="${escapeHtml(d.name)}">
-                <td class="py-1.5">${escapeHtml(d.name)}</td>
-                <td class="py-1.5 text-center w-8">${canEdit ? `<button data-del-department="${escapeHtml(d.name)}" class="text-slate-400 hover:text-red-600">✕</button>` : ''}</td>
-              </tr>`).join('')}
-            ${state.departments.length === 0 ? '<tr><td class="text-center text-slate-400 py-6">Chưa có khoa nào</td></tr>' : ''}
-          </tbody>
-        </table>
-        ${canEdit ? `<div class="mt-3 pt-3 border-t border-slate-100 flex gap-2">
-          <input id="new-dept-name" placeholder="Tên khoa mới (VD: Khoa Nội)" class="border border-slate-300 rounded px-2 py-1.5 text-sm flex-1" />
-          <button id="btn-quick-add-department" class="bg-blue-900 text-white rounded-md px-3 py-1.5 text-sm">Thêm</button>
-        </div>` : ''}
-      </div>
-
-      <div class="lg:col-span-2 bg-white border border-slate-200 rounded-lg p-4">
-        <h3 class="text-sm font-semibold text-slate-700 mb-3">Mỗi khoa dính bao nhiêu chuyên đề</h3>
-        <div class="space-y-2">
-          ${stats.length === 0 ? '<div class="text-sm text-slate-400 py-8 text-center">Chưa có dữ liệu — gắn khoa vào các dòng ở tab "Chi tiết xuất toán"</div>' : stats.map(deptItemHTML).join('')}
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function deptItemHTML(r) {
-  const expanded = state.deptExpanded.has(r.name);
-  return `
-    <div class="border border-slate-200 rounded-lg overflow-hidden">
-      <button data-dept-toggle="${escapeHtml(r.name)}" class="w-full text-left px-4 py-3 flex items-center justify-between gap-3 hover:bg-slate-50">
-        <div class="flex items-center gap-3">
-          <span class="text-sm font-medium text-slate-800">${escapeHtml(r.name)}</span>
-          <span class="text-xs text-slate-500">${r.distinctCodeCount} chuyên đề · ${r.totalRows} lượt</span>
-          ${r.repeatedCodes.length ? `<span class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">${r.repeatedCodes.length} chuyên đề lặp lại</span>` : ''}
-        </div>
-        <span class="text-slate-400 text-sm shrink-0">${expanded ? '▲' : '▼'}</span>
-      </button>
-      ${expanded ? `
-        <div class="px-4 pb-4 pt-1 border-t border-slate-100 text-sm">
-          <div class="flex gap-4 text-xs text-slate-500 mb-2">
-            <span>Lỗi cá nhân: <b class="text-slate-700">${r.personalCause}</b></span>
-            <span>Lỗi hệ thống: <b class="text-slate-700">${r.systemCause}</b></span>
-          </div>
-          <table class="w-full text-sm">
-            <thead><tr class="text-left text-slate-500 border-b border-slate-200"><th class="py-1 font-medium">Mã chuyên đề</th><th class="py-1 font-medium text-right">Số lần dính</th></tr></thead>
-            <tbody>
-              ${r.allCodes.map(([code, count]) => `<tr class="border-b border-slate-100 ${count > 1 ? 'bg-amber-50' : ''}"><td class="py-1 font-mono">${escapeHtml(code)}</td><td class="py-1 text-right ${count > 1 ? 'font-semibold text-amber-700' : ''}">${count}${count > 1 ? ' (lặp lại)' : ''}</td></tr>`).join('')}
-            </tbody>
-          </table>
-        </div>` : ''}
-    </div>`;
-}
 
 // ---------------------------------------------------------------
-// REFERENCE TAB (tra cứu chuyên đề giám định BHYT chính thức)
+// REFERENCE TAB (tra cứu chuyên đề)
 // ---------------------------------------------------------------
 const PHU_LUC_LABELS = {
   'KHÁM': 'PL1 · Tiền khám', 'GIƯỜNG': 'PL2 · Tiền giường', 'DVKT': 'PL3 · Dịch vụ kỹ thuật',
@@ -780,9 +869,6 @@ const SOURCE_COLORS = {
   'DKTK': 'bg-amber-50 text-amber-700 border-amber-200',
   'Tham khảo BV khác': 'bg-purple-50 text-purple-700 border-purple-200',
 };
-function escapeHtml(s) {
-  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
 function nl2br(s) { return escapeHtml(s).replace(/\n/g, '<br/>'); }
 
 function referenceHTML() {
@@ -797,9 +883,9 @@ function referenceHTML() {
 
   return `
     <div class="mb-4">
-      <p class="text-sm text-slate-500 mb-3">Tra cứu ${state.reference.length} chuyên đề — gồm chuyên đề chính thức BHYT (Phụ lục 1–9), chuyên đề thực tế DKTK từng gặp, và tham khảo từ nguồn khác.</p>
+      <p class="text-sm text-slate-500 mb-3">Tra cứu ${state.reference.length} chuyên đề — gồm chuyên đề chính thức BHYT, chuyên đề thực tế DKTK từng gặp, và tham khảo từ nguồn khác.</p>
       <div class="flex flex-wrap gap-2 items-center">
-        <input id="ref-search" type="text" placeholder="Tìm theo tên chuyên đề, cơ sở pháp lý, quy tắc, ghi chú..." value="${escapeHtml(state.refSearch)}" class="border border-slate-300 rounded-md px-3 py-2 text-sm flex-1 min-w-[240px]" />
+        <input id="ref-search" type="text" placeholder="Tìm theo tên, cơ sở pháp lý, quy tắc, ghi chú..." value="${escapeHtml(state.refSearch)}" class="border border-slate-300 rounded-md px-3 py-2 text-sm flex-1 min-w-[240px]" />
         <select id="ref-group" class="border border-slate-300 rounded-md px-2 py-2 text-sm bg-white">
           <option value="ALL" ${state.refGroup === 'ALL' ? 'selected' : ''}>Tất cả phụ lục/nhóm</option>
           ${groups.map((g) => `<option value="${escapeHtml(g)}" ${state.refGroup === g ? 'selected' : ''}>${escapeHtml(PHU_LUC_LABELS[g] || g)}</option>`).join('')}
@@ -825,24 +911,10 @@ function refFormHTML(r) {
   return `
     <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-3" ${idAttr}>
       <div class="grid md:grid-cols-2 gap-3 mb-3">
-        <div>
-          <label class="text-xs text-slate-600">Tên chuyên đề *</label>
-          <input data-rf="name" type="text" value="${escapeHtml(v.name)}" class="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
-        </div>
-        <div>
-          <label class="text-xs text-slate-600">Nguồn chuyên đề</label>
-          <select data-rf="source" class="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white">
-            ${SOURCE_OPTIONS.map((s) => `<option value="${s}" ${v.source === s ? 'selected' : ''}>${s}</option>`).join('')}
-          </select>
-        </div>
-        <div>
-          <label class="text-xs text-slate-600">Phụ lục / Nhóm (tự do, VD: "Thuốc", "DKTK-nội trú")</label>
-          <input data-rf="phu_luc" type="text" value="${escapeHtml(v.phu_luc)}" class="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
-        </div>
-        <div>
-          <label class="text-xs text-slate-600">Nhóm chuyên đề chi tiết (tuỳ chọn)</label>
-          <input data-rf="category_group" type="text" value="${escapeHtml(v.category_group)}" class="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
-        </div>
+        <div><label class="text-xs text-slate-600">Tên chuyên đề *</label><input data-rf="name" type="text" value="${escapeHtml(v.name)}" class="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm" /></div>
+        <div><label class="text-xs text-slate-600">Nguồn chuyên đề</label><select data-rf="source" class="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm bg-white">${SOURCE_OPTIONS.map((s) => `<option value="${s}" ${v.source === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
+        <div><label class="text-xs text-slate-600">Phụ lục / Nhóm (tự do)</label><input data-rf="phu_luc" type="text" value="${escapeHtml(v.phu_luc)}" class="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm" /></div>
+        <div><label class="text-xs text-slate-600">Nhóm chi tiết (tuỳ chọn)</label><input data-rf="category_group" type="text" value="${escapeHtml(v.category_group)}" class="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm" /></div>
       </div>
       <div class="space-y-2 mb-3">
         <div><label class="text-xs text-slate-600">Cơ sở pháp lý</label><textarea data-rf="legal_basis" rows="2" class="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-sm">${escapeHtml(v.legal_basis)}</textarea></div>
@@ -876,119 +948,95 @@ function refItemHTML(r, canEdit) {
           ${r.payment_basis ? `<div><div class="text-xs font-semibold text-slate-500 uppercase mb-1">Cơ sở thanh toán</div><div class="text-slate-700 whitespace-pre-line">${nl2br(r.payment_basis)}</div></div>` : ''}
           ${r.audit_rule ? `<div><div class="text-xs font-semibold text-slate-500 uppercase mb-1">Quy tắc giám định</div><div class="text-slate-700 whitespace-pre-line">${nl2br(r.audit_rule)}</div></div>` : ''}
           ${r.note ? `<div><div class="text-xs font-semibold text-slate-500 uppercase mb-1">Ghi chú / Kinh nghiệm xử lý</div><div class="text-slate-700 whitespace-pre-line">${nl2br(r.note)}</div></div>` : ''}
-          ${canEdit ? `
-            <div class="flex gap-3 pt-1">
-              <button data-ref-edit="${r.id}" class="text-xs text-blue-700 hover:underline">Sửa</button>
-              <button data-ref-delete="${r.id}" class="text-xs text-red-600 hover:underline">Xoá</button>
-            </div>` : ''}
+          ${canEdit ? `<div class="flex gap-3 pt-1"><button data-ref-edit="${r.id}" class="text-xs text-blue-700 hover:underline">Sửa</button><button data-ref-delete="${r.id}" class="text-xs text-red-600 hover:underline">Xoá</button></div>` : ''}
         </div>` : ''}
     </div>`;
 }
 
-
+// ---------------------------------------------------------------
+// GUIDE TAB
+// ---------------------------------------------------------------
 function guideSection(title, items) {
-  return `
-    <div class="bg-white border border-slate-200 rounded-lg p-4">
-      <h3 class="text-sm font-semibold text-blue-900 mb-2">${title}</h3>
-      <div class="space-y-1.5 text-sm text-slate-700">${items.map((i) => `<p>${i}</p>`).join('')}</div>
-    </div>`;
+  return `<div class="bg-white border border-slate-200 rounded-lg p-4"><h3 class="text-sm font-semibold text-blue-900 mb-2">${title}</h3><div class="space-y-1.5 text-sm text-slate-700">${items.map((i) => `<p>${i}</p>`).join('')}</div></div>`;
 }
-
 function guideHTML() {
   return `
     <div class="max-w-3xl space-y-5">
       <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <h2 class="text-base font-semibold text-blue-900 mb-1">BẢNG THEO DÕI XUẤT TOÁN BHYT THEO CHUYÊN ĐỀ</h2>
+        <h2 class="text-base font-semibold text-blue-900 mb-1">THEO DÕI XUẤT TOÁN BHYT THEO CHUYÊN ĐỀ</h2>
         <p class="text-sm text-blue-800">Hướng dẫn nhanh cách dùng dashboard này.</p>
       </div>
-
-      ${guideSection('1. Cấu trúc các tab', [
-        '<b>Tổng quan</b>: thẻ số liệu tổng hợp, biểu đồ chi phí xuất toán theo quý, bảng chuyên đề lặp lại nhiều nhất và luỹ kế chi phí xuất toán cao nhất — tất cả tự động tính, không cần nhập tay.',
-        '<b>Chi tiết xuất toán</b>: bảng nhập liệu chính, mỗi dòng = 1 chuyên đề bị giám định trong 1 quý.',
-        '<b>Kỳ &amp; Danh mục</b>: khai báo các quý (kèm tổng doanh thu BHYT) và danh mục mã chuyên đề (thêm mã mới khi BHYT ban hành thêm).',
+      ${guideSection('1. Cấu trúc dữ liệu', [
+        'Mỗi dòng dữ liệu = 1 dịch vụ/thuốc/vật tư bị xuất toán, kèm Khoa, Người thực hiện, Chi phí, mã Phụ lục (chuyên đề), Nguyên nhân (Cá nhân/Hệ thống).',
+        'Số hồ sơ xuất toán của 1 chuyên đề = số dòng có cùng mã Phụ lục trong 1 quý.',
       ])}
-
-      ${guideSection('2. Vai trò &amp; quyền chỉnh sửa', [
-        '<b>Editor (được sửa)</b>: thấy đầy đủ ô nhập liệu, nút Thêm/Xoá dòng, và nút Import Excel.',
-        '<b>Viewer (chỉ xem)</b>: xem toàn bộ số liệu và biểu đồ, Export Excel được, nhưng mọi ô nhập liệu bị khoá xám, không có nút Thêm/Xoá/Import.',
-        'Muốn đổi vai trò cho ai đó, quản trị viên vào Supabase Dashboard → bảng <code class="bg-white border border-slate-200 rounded px-1">bhyt_user_profiles</code> → sửa cột role.',
+      ${guideSection('2. Các tab', [
+        '<b>Tổng quan</b>: cảnh báo chuyên đề mới/lặp lại, thẻ số liệu, xu hướng theo quý, Pareto chi phí — có bộ lọc Năm/Kỳ/Khoa/Người/Nhóm lỗi.',
+        '<b>Chi tiết xuất toán</b>: bảng nhập liệu chính, import/export Excel.',
+        '<b>Khoa & Cá nhân</b>: heatmap khoa/cá nhân theo Quý hoặc theo Chuyên đề, xem theo chi phí hoặc số lượt.',
+        '<b>Risk Score</b>: điểm rủi ro từng chuyên đề trong 1 kỳ, kèm đèn giao thông 🔴🟡🟢.',
+        '<b>Kỳ & Danh mục</b>: doanh thu BHYT theo quý, và map mã Phụ lục → Nhóm.',
+        '<b>Tra cứu chuyên đề</b>: cơ sở pháp lý/thanh toán/quy tắc giám định, có thể thêm chuyên đề DKTK tự phát hiện.',
       ])}
-
-      ${guideSection('3. Cách tính các tỉ lệ (tab Tổng quan)', [
-        '- Tỉ lệ xuất toán/doanh thu quý = Tổng chi phí xuất toán quý ÷ Tổng doanh thu BHYT quý',
-        '- Tỉ lệ giải trình thành công (theo hồ sơ) = (Số thông báo − Số xuất toán) ÷ Số thông báo',
-        '- Tỉ lệ giải trình thành công (theo tiền) = (Chi phí thông báo − Chi phí xuất toán) ÷ Chi phí thông báo',
-        '- Số quý xuất hiện = số quý mà mã chuyên đề đó bị nhắc tới trong "Chi tiết xuất toán" (đếm lặp lại)',
-        '- Luỹ kế chi phí xuất toán = tổng chi phí xuất toán của mã đó, cộng dồn qua tất cả các quý đã nhập',
-      ])}
-
-      ${guideSection('4. Import / Export Excel', [
-        'Nút <b>Import Excel</b> (chỉ Editor thấy) đọc đúng 3 sheet: "Danh mục chuyên đề", "Kỳ giám định", "Chi tiết xuất toán" từ file mẫu đã thống nhất.',
-        'Dữ liệu import sẽ <b>cộng dồn</b> với dữ liệu đang có trên dashboard (theo Quý-Năm-Mã), không thay thế toàn bộ — trùng thì cập nhật đè, không trùng thì thêm mới.',
-        'Nút <b>Export Excel</b> xuất ngược lại đúng 3 sheet đó để lưu hoặc đối chiếu ở Excel.',
+      ${guideSection('3. Vai trò', [
+        '<b>Editor</b>: sửa/thêm/xoá dữ liệu, import Excel.',
+        '<b>Viewer</b>: chỉ xem và export Excel.',
       ])}
     </div>`;
 }
 
-
+// ---------------------------------------------------------------
+// EVENT WIRING
+// ---------------------------------------------------------------
 function attachTabEvents() {
   if (state.tab === 'overview') {
     const yearEl = document.getElementById('dash-year');
     if (yearEl) yearEl.onchange = (e) => { state.dashYear = e.target.value; renderTab(); };
     const quarterEl = document.getElementById('dash-quarter');
     if (quarterEl) quarterEl.onchange = (e) => { state.dashQuarter = e.target.value; renderTab(); };
-    document.querySelectorAll('[data-pareto-scope]').forEach((btn) => {
-      btn.onclick = () => { state.paretoScope = btn.dataset.paretoScope; renderTab(); };
-    });
+    const khoaEl = document.getElementById('filter-khoa');
+    if (khoaEl) khoaEl.onchange = (e) => { state.filterKhoa = e.target.value; renderTab(); };
+    const bsEl = document.getElementById('filter-bacsi');
+    if (bsEl) bsEl.onchange = (e) => { state.filterBacSi = e.target.value; renderTab(); };
+    const nhomEl = document.getElementById('filter-nhom');
+    if (nhomEl) nhomEl.onchange = (e) => { state.filterNhom = e.target.value; renderTab(); };
+    document.querySelectorAll('[data-pareto-scope]').forEach((btn) => { btn.onclick = () => { state.paretoScope = btn.dataset.paretoScope; renderTab(); }; });
   }
   if (state.tab === 'details') {
     const filterEl = document.getElementById('quarter-filter');
     if (filterEl) filterEl.onchange = (e) => { state.quarterFilter = e.target.value; renderTab(); };
-    const addBtn = document.getElementById('btn-add-detail');
-    if (addBtn) addBtn.onclick = addDetailRow;
+    const addBtn = document.getElementById('btn-add-line');
+    if (addBtn) addBtn.onclick = addLineRow;
     document.querySelectorAll('#tab-content tr[data-id]').forEach((tr) => {
-      tr.querySelectorAll('[data-field]').forEach((input) => {
-        if (input.dataset.multi === 'true') {
-          input.addEventListener('change', () => saveDetailField(tr.dataset.id, input.dataset.field, Array.from(input.selectedOptions).map((o) => o.value)));
-        } else {
-          input.addEventListener('change', () => saveDetailField(tr.dataset.id, input.dataset.field, input.value));
-        }
-      });
-      const delBtn = tr.querySelector('[data-del]');
-      if (delBtn) delBtn.onclick = () => deleteDetailRow(tr.dataset.id);
+      tr.querySelectorAll('[data-field]').forEach((input) => input.addEventListener('change', () => saveLineField(tr.dataset.id, input.dataset.field, input.value)));
+      const delBtn = tr.querySelector('[data-del-line]');
+      if (delBtn) delBtn.onclick = () => deleteLineRow(tr.dataset.id);
     });
+  }
+  if (state.tab === 'heatmap') {
+    document.querySelectorAll('[data-hm]').forEach((btn) => {
+      btn.onclick = () => {
+        const [key, val] = btn.dataset.hm.split(':');
+        if (key === 'mode') state.heatmapMode = val;
+        if (key === 'axis') state.heatmapAxis = val;
+        if (key === 'metric') state.heatmapMetric = val;
+        renderTab();
+      };
+    });
+  }
+  if (state.tab === 'risk') {
+    const rq = document.getElementById('risk-quarter');
+    if (rq) rq.onchange = (e) => { state.riskQuarterKey = e.target.value; renderTab(); };
   }
   if (state.tab === 'setup') {
     const addPeriodBtn = document.getElementById('btn-add-period');
     if (addPeriodBtn) addPeriodBtn.onclick = addPeriodRow;
     const addCatBtn = document.getElementById('btn-add-category');
-    if (addCatBtn) addCatBtn.onclick = () => document.getElementById('new-cat-code')?.focus();
-    const quickAddCatBtn = document.getElementById('btn-quick-add-category');
-    if (quickAddCatBtn) quickAddCatBtn.onclick = quickAddCategory;
-    document.querySelectorAll('#tab-content tr[data-kind="period"]').forEach((tr) => {
-      tr.querySelectorAll('[data-field]').forEach((input) => input.addEventListener('change', () => savePeriodField(tr.dataset.id, input.dataset.field, input.value)));
-      const delBtn = tr.querySelector('[data-del-period]');
-      if (delBtn) delBtn.onclick = () => deletePeriod(tr.dataset.id);
-    });
-    document.querySelectorAll('#tab-content tr[data-kind="category"]').forEach((tr) => {
-      tr.querySelectorAll('[data-field]').forEach((input) => input.addEventListener('change', () => saveCategoryField(tr.dataset.code, input.dataset.field, input.value)));
-      const delBtn = tr.querySelector('[data-del-category]');
-      if (delBtn) delBtn.onclick = () => deleteCategory(tr.dataset.code);
-    });
-  }
-  if (state.tab === 'departments') {
-    const quickAddBtn = document.getElementById('btn-quick-add-department');
-    if (quickAddBtn) quickAddBtn.onclick = quickAddDepartment;
-    document.querySelectorAll('[data-del-department]').forEach((btn) => {
-      btn.onclick = () => deleteDepartment(btn.dataset.delDepartment);
-    });
-    document.querySelectorAll('[data-dept-toggle]').forEach((btn) => {
-      btn.onclick = () => {
-        const name = btn.dataset.deptToggle;
-        if (state.deptExpanded.has(name)) state.deptExpanded.delete(name); else state.deptExpanded.add(name);
-        renderTab();
-      };
-    });
+    if (addCatBtn) addCatBtn.onclick = addCategoryRow;
+    document.querySelectorAll('[data-p-idx]').forEach((input) => input.addEventListener('change', () => savePeriodField(Number(input.dataset.pIdx), input.dataset.pField, input.value)));
+    document.querySelectorAll('[data-del-period]').forEach((btn) => { btn.onclick = () => deletePeriod(btn.dataset.delPeriod); });
+    document.querySelectorAll('[data-c-idx]').forEach((input) => input.addEventListener('change', () => saveCategoryField(Number(input.dataset.cIdx), input.dataset.cField, input.value)));
+    document.querySelectorAll('[data-del-category]').forEach((btn) => { btn.onclick = () => deleteCategory(btn.dataset.delCategory); });
   }
   if (state.tab === 'reference') {
     const searchEl = document.getElementById('ref-search');
@@ -1002,36 +1050,75 @@ function attachTabEvents() {
     if (sourceEl) sourceEl.onchange = (e) => { state.refSource = e.target.value; renderTab(); };
     const addBtn = document.getElementById('btn-ref-add');
     if (addBtn) addBtn.onclick = () => { state.refAdding = true; state.refEditingId = null; renderTab(); };
-    document.querySelectorAll('[data-ref-toggle]').forEach((btn) => {
-      btn.onclick = () => {
-        const id = btn.dataset.refToggle;
-        if (state.refExpanded.has(id)) state.refExpanded.delete(id); else state.refExpanded.add(id);
-        renderTab();
-      };
-    });
-    document.querySelectorAll('[data-ref-edit]').forEach((btn) => {
-      btn.onclick = () => { state.refEditingId = Number(btn.dataset.refEdit); state.refAdding = false; renderTab(); };
-    });
-    document.querySelectorAll('[data-ref-delete]').forEach((btn) => {
-      btn.onclick = () => deleteReferenceItem(Number(btn.dataset.refDelete));
-    });
-    document.querySelectorAll('[data-ref-cancel]').forEach((btn) => {
-      btn.onclick = () => { state.refAdding = false; state.refEditingId = null; renderTab(); };
-    });
-    document.querySelectorAll('[data-ref-save]').forEach((btn) => {
-      btn.onclick = () => saveReferenceForm(btn.dataset.refSave);
-    });
+    document.querySelectorAll('[data-ref-toggle]').forEach((btn) => { btn.onclick = () => { const id = btn.dataset.refToggle; if (state.refExpanded.has(id)) state.refExpanded.delete(id); else state.refExpanded.add(id); renderTab(); }; });
+    document.querySelectorAll('[data-ref-edit]').forEach((btn) => { btn.onclick = () => { state.refEditingId = Number(btn.dataset.refEdit); state.refAdding = false; renderTab(); }; });
+    document.querySelectorAll('[data-ref-delete]').forEach((btn) => { btn.onclick = () => deleteReferenceItem(Number(btn.dataset.refDelete)); });
+    document.querySelectorAll('[data-ref-cancel]').forEach((btn) => { btn.onclick = () => { state.refAdding = false; state.refEditingId = null; renderTab(); }; });
+    document.querySelectorAll('[data-ref-save]').forEach((btn) => { btn.onclick = () => saveReferenceForm(btn.dataset.refSave); });
   }
 }
 
+// ---------------------------------------------------------------
+// CRUD: lines
+// ---------------------------------------------------------------
+async function saveLineField(id, field, value) {
+  const patch = { [field]: field === 'year' || field === 'cost' ? Number(value) : value };
+  await sb.from('bhyt_lines').update(patch).eq('id', id);
+  const row = state.lines.find((l) => String(l.id) === String(id));
+  if (row) Object.assign(row, patch);
+}
+async function deleteLineRow(id) {
+  await sb.from('bhyt_lines').delete().eq('id', id);
+  state.lines = state.lines.filter((l) => String(l.id) !== String(id));
+  renderTab();
+}
+async function addLineRow() {
+  const payload = { quarter: 'Q1', year: new Date().getFullYear(), individual: '', department: '', cost: 0, service: '', error_desc: '', code: '', cause: null };
+  const { data, error } = await sb.from('bhyt_lines').insert(payload).select().single();
+  if (!error) { state.lines.push(data); renderTab(); }
+}
+
+// ---------------------------------------------------------------
+// CRUD: periods & categories
+// ---------------------------------------------------------------
+async function savePeriodField(idx, field, value) {
+  const p = state.periods[idx];
+  const patch = { [field]: field === 'quarter' ? value : Number(value) };
+  await sb.from('bhyt_periods').update(patch).eq('id', p.id);
+  Object.assign(p, patch);
+}
+async function deletePeriod(id) {
+  await sb.from('bhyt_periods').delete().eq('id', id);
+  state.periods = state.periods.filter((p) => String(p.id) !== String(id));
+  renderTab();
+}
+async function addPeriodRow() {
+  const payload = { quarter: 'Q1', year: new Date().getFullYear(), revenue: 0 };
+  const { data, error } = await sb.from('bhyt_periods').insert(payload).select().single();
+  if (!error) { state.periods.push(data); renderTab(); }
+}
+async function saveCategoryField(idx, field, value) {
+  const c = state.categories[idx];
+  await sb.from('bhyt_categories').update({ [field]: value }).eq('code', c.code);
+  c[field] = value;
+}
+async function deleteCategory(code) {
+  await sb.from('bhyt_categories').delete().eq('code', code);
+  state.categories = state.categories.filter((c) => c.code !== code);
+  renderTab();
+}
+async function addCategoryRow() {
+  const { data, error } = await sb.from('bhyt_categories').insert({ code: '', name: '', category_group: '' }).select().single();
+  if (!error) { state.categories.push(data); renderTab(); }
+}
+
+// ---------------------------------------------------------------
+// CRUD: reference
+// ---------------------------------------------------------------
 function readReferenceForm() {
   const box = document.querySelector('[data-ref-form-id]');
   const get = (f) => box.querySelector(`[data-rf="${f}"]`)?.value?.trim() || '';
-  return {
-    name: get('name'), source: get('source') || 'DKTK', phu_luc: get('phu_luc'),
-    category_group: get('category_group'), legal_basis: get('legal_basis'),
-    payment_basis: get('payment_basis'), audit_rule: get('audit_rule'), note: get('note'),
-  };
+  return { name: get('name'), source: get('source') || 'DKTK', phu_luc: get('phu_luc'), category_group: get('category_group'), legal_basis: get('legal_basis'), payment_basis: get('payment_basis'), audit_rule: get('audit_rule'), note: get('note') };
 }
 async function saveReferenceForm(idOrNew) {
   const payload = readReferenceForm();
@@ -1059,82 +1146,15 @@ async function deleteReferenceItem(id) {
   renderTab();
 }
 
-
-async function saveDetailField(id, field, value) {
-  const numeric = ['year', 'notified', 'finalized', 'notified_cost', 'finalized_cost'];
-  const patch = { [field]: numeric.includes(field) ? Number(value) : value };
-  await sb.from('bhyt_details').update(patch).eq('id', id);
-  const row = state.details.find((d) => String(d.id) === String(id));
-  if (row) Object.assign(row, patch);
-}
-async function deleteDetailRow(id) {
-  await sb.from('bhyt_details').delete().eq('id', id);
-  state.details = state.details.filter((d) => String(d.id) !== String(id));
-  renderTab();
-}
-async function addDetailRow() {
-  const payload = { quarter: 'Q1', year: new Date().getFullYear(), code: state.categories[0]?.code || null, notified: 0, finalized: 0, notified_cost: 0, finalized_cost: 0, status: STATUS_OPTIONS[0], cause: null, departments: [], responsible: '', note: '' };
-  const { data, error } = await sb.from('bhyt_details').insert(payload).select().single();
-  if (!error) { state.details.push(data); renderTab(); }
-}
-
-async function savePeriodField(id, field, value) {
-  const patch = { [field]: field === 'quarter' ? value : Number(value) };
-  await sb.from('bhyt_periods').update(patch).eq('id', id);
-  const row = state.periods.find((p) => String(p.id) === String(id));
-  if (row) Object.assign(row, patch);
-}
-async function deletePeriod(id) {
-  await sb.from('bhyt_periods').delete().eq('id', id);
-  state.periods = state.periods.filter((p) => String(p.id) !== String(id));
-  renderTab();
-}
-async function addPeriodRow() {
-  const payload = { quarter: 'Q1', year: new Date().getFullYear(), revenue: 0 };
-  const { data, error } = await sb.from('bhyt_periods').insert(payload).select().single();
-  if (!error) { state.periods.push(data); renderTab(); }
-}
-
-async function saveCategoryField(code, field, value) {
-  await sb.from('bhyt_categories').update({ [field]: value }).eq('code', code);
-  const row = state.categories.find((c) => c.code === code);
-  if (row) row[field] = value;
-}
-async function deleteCategory(code) {
-  await sb.from('bhyt_categories').delete().eq('code', code);
-  state.categories = state.categories.filter((c) => c.code !== code);
-  renderTab();
-}
-async function quickAddCategory() {
-  const input = document.getElementById('new-cat-code');
-  const code = input.value.trim();
-  if (!code) return;
-  const { data, error } = await sb.from('bhyt_categories').insert({ code, name: '', category_group: '' }).select().single();
-  if (!error) { state.categories.push(data); renderTab(); }
-}
-
-async function quickAddDepartment() {
-  const input = document.getElementById('new-dept-name');
-  const name = input.value.trim();
-  if (!name) return;
-  const { data, error } = await sb.from('bhyt_departments').insert({ name }).select().single();
-  if (!error) { state.departments.push(data); input.value = ''; renderTab(); }
-}
-async function deleteDepartment(name) {
-  await sb.from('bhyt_departments').delete().eq('name', name);
-  state.departments = state.departments.filter((d) => d.name !== name);
-  renderTab();
-}
-
 // ---------------------------------------------------------------
 // IMPORT / EXPORT EXCEL
 // ---------------------------------------------------------------
+function dedupeBy(rows, keyFn) {
+  const map = new Map();
+  rows.forEach((r) => map.set(keyFn(r), r));
+  return Array.from(map.values());
+}
 async function handleImport(e) {
-  function dedupeBy(rows, keyFn) {
-    const map = new Map();
-    rows.forEach((r) => map.set(keyFn(r), r)); // dòng nhập sau ghi đè dòng nhập trước nếu trùng khoá
-    return Array.from(map.values());
-  }
   const file = e.target.files?.[0];
   if (!file) return;
   const msgEl = document.getElementById('import-msg');
@@ -1143,70 +1163,73 @@ async function handleImport(e) {
     const wb = XLSX.read(buf, { type: 'array' });
     const sheet = (name) => wb.Sheets[name] ? XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: '' }) : [];
 
-    const cats = dedupeBy(
+    const lineRows = sheet('Chi tiết xuất toán')
+      .map((r) => ({
+        quarter: normalizeQuarter(r['Quý']), year: Number(r['Năm']) || null,
+        individual: String(r['Họ tên người thực hiện/CĐ'] || '').trim(),
+        department: String(r['Khoa'] || '').trim(),
+        cost: Number(r['Chi phí']) || 0,
+        service: String(r['Dịch vụ'] || '').trim(),
+        error_desc: String(r['Lỗi'] || '').trim(),
+        code: String(r['Phụ lục'] || '').trim(),
+        cause: String(r['Nguyên nhân'] || '').trim() || null,
+      }))
+      .filter((r) => r.quarter && r.year);
+
+    const periodRows = sheet('Doanh thu BHYT')
+      .map((r) => ({ quarter: normalizeQuarter(r['Quý']), year: Number(r['Năm']) || null, revenue: Number(r['Doanh thu BHYT']) || 0 }))
+      .filter((r) => r.quarter && r.year);
+
+    const catRows = dedupeBy(
       sheet('Danh mục chuyên đề')
-        .map((r) => ({ code: String(r['Mã chuyên đề'] || '').trim(), name: String(r['Tên chuyên đề'] || '').trim(), category_group: String(r['Nhóm'] || '').trim() }))
+        .map((r) => ({ code: String(r['Mã (Phụ lục)'] || r['Mã chuyên đề'] || '').trim(), name: String(r['Tên chuyên đề'] || '').trim(), category_group: String(r['Nhóm'] || '').trim() }))
         .filter((r) => r.code),
       (r) => r.code
     );
-    const pers = dedupeBy(
-      sheet('Kỳ giám định')
-        .map((r) => ({ quarter: String(r['Quý'] || '').trim(), year: Number(r['Năm']) || null, revenue: Number(r['Tổng doanh thu BHYT quý (đ)']) || 0 }))
-        .filter((r) => r.quarter && r.year && !String(r.quarter).startsWith('TỔNG')),
-      (r) => `${r.quarter}-${r.year}`
-    );
-    const dets = dedupeBy(
-      sheet('Chi tiết xuất toán')
-        .map((r) => ({
-          quarter: String(r['Quý'] || '').trim(), year: Number(r['Năm']) || null, code: String(r['Mã chuyên đề'] || '').trim(),
-          notified: Number(r['Số thông báo (hồ sơ)']) || 0, finalized: Number(r['Số xuất toán (hồ sơ)']) || 0,
-          notified_cost: Number(r['Chi phí thông báo (đ)']) || 0, finalized_cost: Number(r['Chi phí xuất toán (đ)']) || 0,
-          status: String(r['Trạng thái giải trình'] || '').trim() || STATUS_OPTIONS[0],
-          cause: String(r['Nguyên nhân'] || '').trim() || null,
-          departments: String(r['Khoa vi phạm'] || '').split(/[;,]/).map((s) => s.trim()).filter(Boolean),
-          responsible: String(r['Phụ trách khắc phục chính'] || '').trim(),
-          note: String(r['Ghi chú'] || '').trim(),
-        }))
-        .filter((r) => r.quarter && r.year && r.code),
-      (r) => `${r.quarter}-${r.year}-${r.code}`
-    );
 
-    const deptNamesFromSheet = sheet('Danh mục khoa').map((r) => String(r['Tên khoa'] || r['Khoa'] || '').trim()).filter(Boolean);
-    const deptNamesFromDetails = dets.flatMap((d) => d.departments);
-    const deps = Array.from(new Set([...deptNamesFromSheet, ...deptNamesFromDetails])).map((name) => ({ name }));
+    // Tự thêm các mã Phụ lục xuất hiện trong dữ liệu chi tiết nhưng chưa có trong Danh mục chuyên đề (để không mất mã nào)
+    const knownCodes = new Set(catRows.map((c) => c.code));
+    lineRows.forEach((l) => {
+      if (l.code && !knownCodes.has(l.code)) {
+        knownCodes.add(l.code);
+        catRows.push({ code: l.code, name: l.error_desc || '', category_group: '' });
+      }
+    });
+
+    const dedupedPeriods = dedupeBy(periodRows, (r) => qKey(r.quarter, r.year));
 
     const results = [];
-    if (cats.length) results.push(['Danh mục chuyên đề', await sb.from('bhyt_categories').upsert(cats, { onConflict: 'code' })]);
-    if (pers.length) results.push(['Kỳ giám định', await sb.from('bhyt_periods').upsert(pers, { onConflict: 'quarter,year' })]);
-    if (deps.length) results.push(['Danh mục khoa', await sb.from('bhyt_departments').upsert(deps, { onConflict: 'name' })]);
-    if (dets.length) results.push(['Chi tiết xuất toán', await sb.from('bhyt_details').upsert(dets, { onConflict: 'quarter,year,code' })]);
+    if (catRows.length) results.push(['Danh mục chuyên đề', await sb.from('bhyt_categories').upsert(catRows, { onConflict: 'code' })]);
+    if (dedupedPeriods.length) results.push(['Doanh thu BHYT', await sb.from('bhyt_periods').upsert(dedupedPeriods, { onConflict: 'quarter,year' })]);
+    if (lineRows.length) results.push(['Chi tiết xuất toán', await sb.from('bhyt_lines').insert(lineRows)]);
 
     const failed = results.filter(([, res]) => res.error);
     await loadAll();
     if (failed.length) {
       msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-red-50 text-red-700 border border-red-200 rounded-md px-3 py-2 text-sm">Lỗi khi ghi ${failed.map(([n]) => n).join(', ')}: ${failed.map(([, res]) => res.error.message).join(' | ')}</div></div>`;
     } else {
-      msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md px-3 py-2 text-sm">Đã cộng dồn: ${pers.length} kỳ, ${cats.length} chuyên đề, ${dets.length} dòng chi tiết.</div></div>`;
+      msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md px-3 py-2 text-sm">Đã thêm ${lineRows.length} dòng chi tiết, ${dedupedPeriods.length} kỳ doanh thu, ${catRows.length} mã chuyên đề.</div></div>`;
     }
     renderTab();
   } catch (err) {
-    msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-red-50 text-red-700 border border-red-200 rounded-md px-3 py-2 text-sm">Không đọc được file. Kiểm tra đúng mẫu 3 sheet.</div></div>`;
+    msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-red-50 text-red-700 border border-red-200 rounded-md px-3 py-2 text-sm">Không đọc được file: ${escapeHtml(err.message || String(err))}</div></div>`;
   } finally {
     e.target.value = '';
-    setTimeout(() => { msgEl.innerHTML = ''; }, 6000);
+    setTimeout(() => { msgEl.innerHTML = ''; }, 8000);
   }
 }
 
 function handleExport() {
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(state.categories.map((c) => ({ 'Mã chuyên đề': c.code, 'Tên chuyên đề': c.name, 'Nhóm': c.category_group }))), 'Danh mục chuyên đề');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(state.periods.map((p) => ({ 'Quý': p.quarter, 'Năm': p.year, 'Tổng doanh thu BHYT quý (đ)': p.revenue }))), 'Kỳ giám định');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(state.departments.map((d) => ({ 'Tên khoa': d.name }))), 'Danh mục khoa');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(state.details.map((d) => ({
-    'Quý': d.quarter, 'Năm': d.year, 'Mã chuyên đề': d.code, 'Số thông báo (hồ sơ)': d.notified, 'Số xuất toán (hồ sơ)': d.finalized,
-    'Chi phí thông báo (đ)': d.notified_cost, 'Chi phí xuất toán (đ)': d.finalized_cost, 'Trạng thái giải trình': d.status,
-    'Nguyên nhân': d.cause || '', 'Khoa vi phạm': (d.departments || []).join('; '), 'Phụ trách khắc phục chính': d.responsible || '', 'Ghi chú': d.note,
-  }))), 'Chi tiết xuất toán');
+  const lineSheet = XLSX.utils.json_to_sheet(state.lines.map((l) => ({
+    'Quý': QUARTER_VN[l.quarter] || l.quarter, 'Năm': l.year, 'Họ tên người thực hiện/CĐ': l.individual,
+    'Khoa': l.department, 'Chi phí': l.cost, 'Dịch vụ': l.service, 'Lỗi': l.error_desc, 'Phụ lục': l.code, 'Nguyên nhân': l.cause,
+  })));
+  XLSX.utils.book_append_sheet(wb, lineSheet, 'Chi tiết xuất toán');
+  const perSheet = XLSX.utils.json_to_sheet(state.periods.map((p) => ({ 'Quý': QUARTER_VN[p.quarter] || p.quarter, 'Năm': p.year, 'Doanh thu BHYT': p.revenue })));
+  XLSX.utils.book_append_sheet(wb, perSheet, 'Doanh thu BHYT');
+  const catSheet = XLSX.utils.json_to_sheet(state.categories.map((c) => ({ 'Mã (Phụ lục)': c.code, 'Tên chuyên đề': c.name, 'Nhóm': c.category_group })));
+  XLSX.utils.book_append_sheet(wb, catSheet, 'Danh mục chuyên đề');
   XLSX.writeFile(wb, `Xuat_toan_BHYT_export_${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
