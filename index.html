@@ -558,7 +558,7 @@ function overviewHTML() {
 
     <div class="bg-white border border-slate-200 rounded-lg p-3 mb-4">
       <h3 class="text-sm font-semibold text-slate-700 mb-2">Chi phí xuất toán &amp; tỉ lệ theo quý</h3>
-      <canvas id="quarter-chart" height="55"></canvas>
+      <div style="height:160px"><canvas id="quarter-chart"></canvas></div>
     </div>
 
     <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
@@ -566,7 +566,7 @@ function overviewHTML() {
         <h3 class="text-sm font-semibold text-slate-700">Xu hướng so với quý trước${current ? ` (${current.label}${previous ? ' so với ' + previous.label : ''})` : ''}</h3>
         ${trendPct !== null ? `<span class="text-sm font-semibold ${trendPct > 0 ? 'text-red-600' : trendPct < 0 ? 'text-emerald-600' : 'text-slate-500'}">${trendPct > 0 ? '▲' : trendPct < 0 ? '▼' : '—'} ${Math.abs(trendPct).toFixed(1)}% tổng chi phí xuất toán</span>` : ''}
       </div>
-      ${!previous ? '<div class="text-sm text-slate-400 py-6 text-center">Chưa đủ dữ liệu 2 kỳ liên tiếp để so sánh</div>' : '<canvas id="trend-chart" height="55"></canvas>'}
+      ${!previous ? '<div class="text-sm text-slate-400 py-6 text-center">Chưa đủ dữ liệu 2 kỳ liên tiếp để so sánh</div>' : '<div style="height:160px"><canvas id="trend-chart"></canvas></div>'}
     </div>
 
     <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
@@ -577,7 +577,7 @@ function overviewHTML() {
           <button data-pareto-scope="cumulative" class="px-3 py-1.5 ${state.paretoScope === 'cumulative' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Luỹ kế toàn bộ</button>
         </div>
       </div>
-      <canvas id="pareto-cost-chart" height="120"></canvas>
+      <div style="height:220px"><canvas id="pareto-cost-chart"></canvas></div>
     </div>
 
     <div class="bg-white border border-slate-200 rounded-lg p-4">
