@@ -75,7 +75,7 @@ let state = {
   tab: 'overview',
   dashYear: 'ALL', dashQuarter: 'ALL', paretoScope: 'filtered',
   filterKhoa: 'ALL', filterBacSi: 'ALL', filterNhom: 'ALL', filterCause: 'ALL', filterRemediator: 'ALL',
-  quarterFilter: 'ALL',
+  quarterFilter: 'ALL', detailsSearch: '',
   heatmapMode: 'department', heatmapAxis: 'quarter', heatmapMetric: 'cost', heatmapCause: 'ALL',
   riskQuarterKey: null,
   refSearch: '', refGroup: 'ALL', refSource: 'ALL', refExpanded: new Set(), refAdding: false, refEditingId: null,
@@ -650,24 +650,32 @@ function drawAllOverviewCharts() { drawChart(); drawTrendChart(); drawParetoChar
 // ---------------------------------------------------------------
 // DETAILS TAB (editable lines table)
 // ---------------------------------------------------------------
+function visibleDetailRows() {
+  let rows = state.lines;
+  if (state.quarterFilter !== 'ALL') rows = rows.filter((l) => qKey(l.quarter, l.year) === state.quarterFilter);
+  const q = state.detailsSearch.trim().toLowerCase();
+  if (q) rows = rows.filter((l) => [l.individual, l.department, l.service, l.error_desc, l.code, l.remediator, l.cause].some((f) => (f || '').toLowerCase().includes(q)));
+  return rows;
+}
+
 function detailsHTML() {
   const canEdit = state.role === 'editor';
   const qs = quarterSummaries();
-  let rows = state.lines;
-  if (state.quarterFilter !== 'ALL') rows = rows.filter((l) => qKey(l.quarter, l.year) === state.quarterFilter);
-  rows = [...rows].sort((a, b) => (b.cost || 0) - (a.cost || 0));
+  let rows = [...visibleDetailRows()].sort((a, b) => (b.cost || 0) - (a.cost || 0));
 
   return `
     <div class="flex items-center justify-between flex-wrap gap-2 mb-4">
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 flex-wrap">
         <label class="text-sm text-slate-600">Xem theo kỳ:</label>
         <select id="quarter-filter" class="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
           <option value="ALL" ${state.quarterFilter === 'ALL' ? 'selected' : ''}>Tất cả (xếp theo chi phí)</option>
           ${qs.map((q) => `<option value="${q.key}" ${state.quarterFilter === q.key ? 'selected' : ''}>${q.label}</option>`).join('')}
         </select>
+        <input id="details-search" type="text" placeholder="Tìm theo Khoa/Người/Dịch vụ/Lỗi/Mã/Người khắc phục..." value="${escapeHtml(state.detailsSearch)}" class="border border-slate-300 rounded-md px-3 py-1.5 text-sm min-w-[260px]" />
       </div>
       <div class="flex items-center gap-2">
         <span class="text-xs text-slate-400">${rows.length} dòng</span>
+        ${canEdit && rows.length > 0 ? `<button id="btn-bulk-delete" class="border border-red-300 text-red-600 rounded-md px-3 py-1.5 text-sm font-medium hover:bg-red-50">Xoá ${rows.length} dòng đang hiển thị</button>` : ''}
         ${canEdit ? '<button id="btn-add-line" class="bg-blue-900 text-white rounded-md px-3 py-1.5 text-sm font-medium hover:bg-blue-800">+ Thêm dòng</button>' : ''}
       </div>
     </div>
@@ -1036,8 +1044,15 @@ function attachTabEvents() {
   if (state.tab === 'details') {
     const filterEl = document.getElementById('quarter-filter');
     if (filterEl) filterEl.onchange = (e) => { state.quarterFilter = e.target.value; renderTab(); };
+    const searchEl = document.getElementById('details-search');
+    if (searchEl) {
+      searchEl.addEventListener('input', (e) => { state.detailsSearch = e.target.value; renderTab(); });
+      const val = searchEl.value; searchEl.focus(); searchEl.value = ''; searchEl.value = val;
+    }
     const addBtn = document.getElementById('btn-add-line');
     if (addBtn) addBtn.onclick = addLineRow;
+    const bulkDelBtn = document.getElementById('btn-bulk-delete');
+    if (bulkDelBtn) bulkDelBtn.onclick = bulkDeleteVisibleLines;
     document.querySelectorAll('#tab-content tr[data-id]').forEach((tr) => {
       tr.querySelectorAll('[data-field]').forEach((input) => input.addEventListener('change', () => saveLineField(tr.dataset.id, input.dataset.field, input.value)));
       const delBtn = tr.querySelector('[data-del-line]');
@@ -1102,6 +1117,17 @@ async function saveLineField(id, field, value) {
 async function deleteLineRow(id) {
   await sb.from('bhyt_lines').delete().eq('id', id);
   state.lines = state.lines.filter((l) => String(l.id) !== String(id));
+  renderTab();
+}
+async function bulkDeleteVisibleLines() {
+  const rows = visibleDetailRows();
+  if (rows.length === 0) return;
+  if (!confirm(`Xoá ${rows.length} dòng đang hiển thị? Không thể hoàn tác.`)) return;
+  const ids = rows.map((r) => r.id);
+  const { error } = await sb.from('bhyt_lines').delete().in('id', ids);
+  if (error) { alert('Lỗi khi xoá: ' + error.message); return; }
+  const idSet = new Set(ids.map(String));
+  state.lines = state.lines.filter((l) => !idSet.has(String(l.id)));
   renderTab();
 }
 async function addLineRow() {
@@ -1189,6 +1215,11 @@ function dedupeBy(rows, keyFn) {
 async function handleImport(e) {
   const file = e.target.files?.[0];
   if (!file) return;
+  const overwrite = confirm(
+    'Chọn chế độ import:\n\n' +
+    'Bấm OK = ĐÈ dữ liệu (xoá dữ liệu "Chi tiết xuất toán" cũ của đúng những quý có trong file này, rồi nhập lại — quý khác không đụng tới).\n' +
+    'Bấm Huỷ (Cancel) = chỉ THÊM dữ liệu mới, giữ nguyên toàn bộ dữ liệu cũ.'
+  );
   const msgEl = document.getElementById('import-msg');
   try {
     const buf = await file.arrayBuffer();
@@ -1234,6 +1265,15 @@ async function handleImport(e) {
     const results = [];
     if (catRows.length) results.push(['Danh mục chuyên đề', await sb.from('bhyt_categories').upsert(catRows, { onConflict: 'code' })]);
     if (dedupedPeriods.length) results.push(['Doanh thu BHYT', await sb.from('bhyt_periods').upsert(dedupedPeriods, { onConflict: 'quarter,year' })]);
+
+    if (overwrite && lineRows.length) {
+      const quartersInFile = Array.from(new Set(lineRows.map((r) => qKey(r.quarter, r.year))));
+      for (const qk of quartersInFile) {
+        const [qtr, yr] = [qk.split('-')[0], Number(qk.split('-')[1])];
+        const delRes = await sb.from('bhyt_lines').delete().eq('quarter', qtr).eq('year', yr);
+        if (delRes.error) results.push([`Xoá dữ liệu cũ (${qk})`, delRes]);
+      }
+    }
     if (lineRows.length) results.push(['Chi tiết xuất toán', await sb.from('bhyt_lines').insert(lineRows)]);
 
     const failed = results.filter(([, res]) => res.error);
@@ -1241,7 +1281,7 @@ async function handleImport(e) {
     if (failed.length) {
       msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-red-50 text-red-700 border border-red-200 rounded-md px-3 py-2 text-sm">Lỗi khi ghi ${failed.map(([n]) => n).join(', ')}: ${failed.map(([, res]) => res.error.message).join(' | ')}</div></div>`;
     } else {
-      msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md px-3 py-2 text-sm">Đã thêm ${lineRows.length} dòng chi tiết, ${dedupedPeriods.length} kỳ doanh thu, ${catRows.length} mã chuyên đề.</div></div>`;
+      msgEl.innerHTML = `<div class="max-w-7xl mx-auto px-6 pb-3"><div class="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md px-3 py-2 text-sm">${overwrite ? 'Đã ĐÈ và nhập lại' : 'Đã thêm'} ${lineRows.length} dòng chi tiết, ${dedupedPeriods.length} kỳ doanh thu, ${catRows.length} mã chuyên đề.</div></div>`;
     }
     renderTab();
   } catch (err) {
