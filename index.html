@@ -74,9 +74,9 @@ let state = {
   lines: [], periods: [], categories: [], reference: [],
   tab: 'overview',
   dashYear: 'ALL', dashQuarter: 'ALL', paretoScope: 'filtered',
-  filterKhoa: 'ALL', filterBacSi: 'ALL', filterNhom: 'ALL',
+  filterKhoa: 'ALL', filterBacSi: 'ALL', filterNhom: 'ALL', filterCause: 'ALL', filterRemediator: 'ALL',
   quarterFilter: 'ALL',
-  heatmapMode: 'department', heatmapAxis: 'quarter', heatmapMetric: 'cost',
+  heatmapMode: 'department', heatmapAxis: 'quarter', heatmapMetric: 'cost', heatmapCause: 'ALL',
   riskQuarterKey: null,
   refSearch: '', refGroup: 'ALL', refSource: 'ALL', refExpanded: new Set(), refAdding: false, refEditingId: null,
   showPwBox: false, pwMsg: null,
@@ -169,6 +169,9 @@ async function loadAll() {
   state.periods = pers || [];
   state.categories = cats || [];
   state.reference = refs || [];
+  state.khoaNorm = buildNormalizer(state.lines.map((l) => l.department));
+  state.bacSiNorm = buildNormalizer(state.lines.map((l) => l.individual));
+  state.remediatorNorm = buildNormalizer(state.lines.map((l) => l.remediator));
 }
 
 // ---------------------------------------------------------------
@@ -274,21 +277,25 @@ function paretoData(metric, scope, topN) {
   return sorted.map((r) => { cum += r.value; return { ...r, cumPct: total ? (cum / total) * 100 : 0 }; });
 }
 
-function khoaNormalizer() { return buildNormalizer(state.lines.map((l) => l.department)); }
-function bacSiNormalizer() { return buildNormalizer(state.lines.map((l) => l.individual)); }
+function khoaNormalizer() { return state.khoaNorm || buildNormalizer(state.lines.map((l) => l.department)); }
+function bacSiNormalizer() { return state.bacSiNorm || buildNormalizer(state.lines.map((l) => l.individual)); }
+function remediatorNormalizer() { return state.remediatorNorm || buildNormalizer(state.lines.map((l) => l.remediator)); }
 function khoaList() { const n = khoaNormalizer(); return Array.from(new Set(state.lines.map((l) => n(l.department)).filter(Boolean))).sort(); }
 function bacSiList() { const n = bacSiNormalizer(); return Array.from(new Set(state.lines.map((l) => n(l.individual)).filter(Boolean))).sort(); }
+function remediatorList() { const n = remediatorNormalizer(); return Array.from(new Set(state.lines.map((l) => n(l.remediator)).filter(Boolean))).sort(); }
 function nhomList() { return Array.from(new Set(state.categories.map((c) => c.category_group).filter(Boolean))).sort(); }
 
-// Áp dụng toàn bộ bộ lọc (năm/kỳ/khoa/bác sĩ/nhóm lỗi) lên danh sách dòng dữ liệu gốc
+// Áp dụng toàn bộ bộ lọc (năm/kỳ/khoa/bác sĩ/nhóm lỗi/nguyên nhân/người khắc phục) lên danh sách dòng dữ liệu gốc
 function scopedLines() {
-  const nKhoa = khoaNormalizer(), nBacSi = bacSiNormalizer();
+  const nKhoa = khoaNormalizer(), nBacSi = bacSiNormalizer(), nRem = remediatorNormalizer();
   let rows = state.lines;
   if (state.dashYear !== 'ALL') rows = rows.filter((l) => l.year === Number(state.dashYear));
   if (state.dashQuarter !== 'ALL') rows = rows.filter((l) => l.quarter === state.dashQuarter);
   if (state.filterKhoa !== 'ALL') rows = rows.filter((l) => nKhoa(l.department) === state.filterKhoa);
   if (state.filterBacSi !== 'ALL') rows = rows.filter((l) => nBacSi(l.individual) === state.filterBacSi);
   if (state.filterNhom !== 'ALL') rows = rows.filter((l) => categoryGroupOf(l.code) === state.filterNhom);
+  if (state.filterCause !== 'ALL') rows = rows.filter((l) => (l.cause || '') === state.filterCause);
+  if (state.filterRemediator !== 'ALL') rows = rows.filter((l) => nRem(l.remediator) === state.filterRemediator);
   return rows;
 }
 function scopedTotals() {
@@ -302,10 +309,12 @@ function scopedTotals() {
 // ---------------------------------------------------------------
 // DERIVED DATA — Khoa / Cá nhân heatmap
 // ---------------------------------------------------------------
-function heatmapData(mode, axis, metric) {
+function heatmapData(mode, axis, metric, cause) {
   const field = mode === 'department' ? 'department' : 'individual';
-  const normalize = buildNormalizer(state.lines.map((l) => l[field]));
-  const rows = state.lines.map((l) => ({ ...l, _entity: normalize(l[field]) })).filter((l) => l._entity);
+  const normalize = mode === 'department' ? khoaNormalizer() : bacSiNormalizer();
+  let baseLines = state.lines;
+  if (cause && cause !== 'ALL') baseLines = baseLines.filter((l) => (l.cause || '') === cause);
+  const rows = baseLines.map((l) => ({ ...l, _entity: normalize(l[field]) })).filter((l) => l._entity);
 
   const entities = Array.from(new Set(rows.map((r) => r._entity)));
   const axisKeys = axis === 'quarter'
@@ -431,16 +440,19 @@ function tabBtn(id, label) {
 
 function renderTab() {
   const el = document.getElementById('tab-content');
-  if (state.lines.length === 0 && state.periods.length === 0 && state.tab !== 'guide' && state.tab !== 'reference' && state.tab !== 'setup') {
-    el.innerHTML = `<div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3 mb-4 text-sm">Chưa có dữ liệu. Import file Excel hoặc thêm dữ liệu ở tab "Kỳ & Danh mục" / "Chi tiết xuất toán".</div>`;
+  let banner = '';
+  if (state.lines.length === 0 && state.periods.length === 0 && !['guide', 'reference', 'setup'].includes(state.tab)) {
+    banner = `<div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3 mb-4 text-sm">Chưa có dữ liệu. Import file Excel hoặc thêm dữ liệu ở tab "Kỳ & Danh mục" / "Chi tiết xuất toán".</div>`;
   }
-  if (state.tab === 'overview') el.innerHTML += overviewHTML();
-  if (state.tab === 'details') el.innerHTML = detailsHTML();
-  if (state.tab === 'heatmap') el.innerHTML = heatmapHTML();
-  if (state.tab === 'risk') el.innerHTML = riskHTML();
-  if (state.tab === 'setup') el.innerHTML = setupHTML();
-  if (state.tab === 'reference') el.innerHTML = referenceHTML();
-  if (state.tab === 'guide') el.innerHTML = guideHTML();
+  let content = '';
+  if (state.tab === 'overview') content = overviewHTML();
+  if (state.tab === 'details') content = detailsHTML();
+  if (state.tab === 'heatmap') content = heatmapHTML();
+  if (state.tab === 'risk') content = riskHTML();
+  if (state.tab === 'setup') content = setupHTML();
+  if (state.tab === 'reference') content = referenceHTML();
+  if (state.tab === 'guide') content = guideHTML();
+  el.innerHTML = banner + content;
   attachTabEvents();
   if (state.tab === 'overview') drawAllOverviewCharts();
 }
@@ -526,6 +538,14 @@ function overviewHTML() {
         <option value="ALL">Nhóm lỗi: Tất cả</option>
         ${nhomList().map((k) => `<option value="${escapeHtml(k)}" ${state.filterNhom === k ? 'selected' : ''}>${escapeHtml(k)}</option>`).join('')}
       </select>
+      <select id="filter-cause" class="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+        <option value="ALL">Nguyên nhân: Tất cả</option>
+        ${CAUSE_OPTIONS.map((c) => `<option value="${c}" ${state.filterCause === c ? 'selected' : ''}>${c}</option>`).join('')}
+      </select>
+      <select id="filter-remediator" class="border border-slate-300 rounded-md px-2 py-1.5 text-sm bg-white">
+        <option value="ALL">Người khắc phục: Tất cả</option>
+        ${remediatorList().map((k) => `<option value="${escapeHtml(k)}" ${state.filterRemediator === k ? 'selected' : ''}>${escapeHtml(k)}</option>`).join('')}
+      </select>
       <span class="text-xs text-slate-400">Áp dụng cho thẻ số liệu và Pareto bên dưới</span>
     </div>
 
@@ -536,9 +556,9 @@ function overviewHTML() {
       ${statCard('Mục tiêu ≤ ' + fmtPct(TARGET_RATE), vsTarget === null ? '—' : (vsTarget > 0 ? `Cao hơn ${vsTarget.toFixed(2)}%` : `Thấp hơn ${Math.abs(vsTarget).toFixed(2)}%`), vsTarget === null ? 'slate' : (vsTarget > 0 ? 'red' : 'emerald'))}
     </div>
 
-    <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
-      <h3 class="text-sm font-semibold text-slate-700 mb-3">Chi phí xuất toán &amp; tỉ lệ theo quý</h3>
-      <canvas id="quarter-chart" height="90"></canvas>
+    <div class="bg-white border border-slate-200 rounded-lg p-3 mb-4">
+      <h3 class="text-sm font-semibold text-slate-700 mb-2">Chi phí xuất toán &amp; tỉ lệ theo quý</h3>
+      <canvas id="quarter-chart" height="55"></canvas>
     </div>
 
     <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
@@ -546,7 +566,7 @@ function overviewHTML() {
         <h3 class="text-sm font-semibold text-slate-700">Xu hướng so với quý trước${current ? ` (${current.label}${previous ? ' so với ' + previous.label : ''})` : ''}</h3>
         ${trendPct !== null ? `<span class="text-sm font-semibold ${trendPct > 0 ? 'text-red-600' : trendPct < 0 ? 'text-emerald-600' : 'text-slate-500'}">${trendPct > 0 ? '▲' : trendPct < 0 ? '▼' : '—'} ${Math.abs(trendPct).toFixed(1)}% tổng chi phí xuất toán</span>` : ''}
       </div>
-      ${!previous ? '<div class="text-sm text-slate-400 py-6 text-center">Chưa đủ dữ liệu 2 kỳ liên tiếp để so sánh</div>' : '<canvas id="trend-chart" height="90"></canvas>'}
+      ${!previous ? '<div class="text-sm text-slate-400 py-6 text-center">Chưa đủ dữ liệu 2 kỳ liên tiếp để so sánh</div>' : '<canvas id="trend-chart" height="55"></canvas>'}
     </div>
 
     <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6">
@@ -557,7 +577,7 @@ function overviewHTML() {
           <button data-pareto-scope="cumulative" class="px-3 py-1.5 ${state.paretoScope === 'cumulative' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Luỹ kế toàn bộ</button>
         </div>
       </div>
-      <canvas id="pareto-cost-chart" height="220"></canvas>
+      <canvas id="pareto-cost-chart" height="120"></canvas>
     </div>
 
     <div class="bg-white border border-slate-200 rounded-lg p-4">
@@ -582,7 +602,7 @@ function drawChart() {
         { type: 'line', label: 'Tỉ lệ xuất toán (%)', data: qs.map((q) => q.rateVsRevenue !== null ? +(q.rateVsRevenue * 100).toFixed(2) : 0), borderColor: '#1e3a8a', yAxisID: 'y1', tension: 0.3 },
       ],
     },
-    options: { responsive: true, scales: {
+    options: { responsive: true, maintainAspectRatio: false, scales: {
       y: { position: 'left', title: { display: true, text: 'triệu đ' } },
       y1: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: '%' } },
     } },
@@ -602,7 +622,7 @@ function drawTrendChart() {
       { label: `${previous.label} (tr đ)`, data: groups.map((g) => Math.round((prevTotals[g] || 0) / 1e6)), backgroundColor: '#cbd5e1' },
       { label: `${current.label} (tr đ)`, data: groups.map((g) => Math.round((curTotals[g] || 0) / 1e6)), backgroundColor: '#dc2626' },
     ] },
-    options: { responsive: true, scales: { y: { title: { display: true, text: 'triệu đ' } } } },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { title: { display: true, text: 'triệu đ' } } } },
   });
 }
 function drawParetoCharts() {
@@ -619,7 +639,7 @@ function drawParetoCharts() {
         { type: 'line', label: '% luỹ kế', data: data.map((d) => +d.cumPct.toFixed(1)), borderColor: '#f59e0b', yAxisID: 'y1', tension: 0.2 },
       ],
     },
-    options: { responsive: true, scales: {
+    options: { responsive: true, maintainAspectRatio: false, scales: {
       y: { position: 'left', title: { display: true, text: 'triệu đ' } },
       y1: { position: 'right', min: 0, max: 100, grid: { drawOnChartArea: false }, title: { display: true, text: '% luỹ kế' } },
     } },
@@ -652,19 +672,20 @@ function detailsHTML() {
       </div>
     </div>
     <div class="bg-white border border-slate-200 rounded-lg overflow-x-auto">
-      <table class="w-full text-sm min-w-[1100px]">
+      <datalist id="remediator-list">${remediatorList().map((n) => `<option value="${escapeHtml(n)}">`).join('')}</datalist>
+      <table class="w-full text-sm min-w-[1200px]">
         <thead class="bg-slate-50 text-slate-500 text-xs uppercase">
           <tr>
             <th class="text-left px-2 py-2">Quý</th><th class="text-left px-2 py-2">Năm</th>
             <th class="text-left px-2 py-2">Người thực hiện/CĐ</th><th class="text-left px-2 py-2">Khoa</th>
             <th class="text-right px-2 py-2">Chi phí</th><th class="text-left px-2 py-2">Dịch vụ</th>
             <th class="text-left px-2 py-2">Lỗi</th><th class="text-left px-2 py-2">Phụ lục</th>
-            <th class="text-left px-2 py-2">Nguyên nhân</th><th></th>
+            <th class="text-left px-2 py-2">Nguyên nhân</th><th class="text-left px-2 py-2">Người khắc phục</th><th></th>
           </tr>
         </thead>
         <tbody>
           ${rows.map((l) => lineRow(l, canEdit)).join('')}
-          ${rows.length === 0 ? '<tr><td colspan="10" class="text-center text-slate-400 py-8">Chưa có dữ liệu</td></tr>' : ''}
+          ${rows.length === 0 ? '<tr><td colspan="11" class="text-center text-slate-400 py-8">Chưa có dữ liệu</td></tr>' : ''}
         </tbody>
       </table>
     </div>
@@ -684,6 +705,7 @@ function lineRow(l, canEdit) {
       <td class="px-2 py-1"><input ${dis} type="text" data-field="error_desc" value="${escapeHtml(l.error_desc || '')}" class="border border-slate-200 rounded px-1 py-1 w-40" /></td>
       <td class="px-2 py-1"><input ${dis} type="text" data-field="code" value="${escapeHtml(l.code || '')}" class="border border-slate-200 rounded px-1 py-1 w-24 font-mono" /></td>
       <td class="px-2 py-1"><select ${dis} data-field="cause" class="border border-slate-200 rounded px-1 py-1 w-24"><option value="">—</option>${CAUSE_OPTIONS.map((c) => `<option ${c === l.cause ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
+      <td class="px-2 py-1"><input ${dis} type="text" list="remediator-list" data-field="remediator" value="${escapeHtml(l.remediator || '')}" class="border border-slate-200 rounded px-1 py-1 w-32" /></td>
       <td class="px-2 py-1 text-center">${canEdit ? `<button data-del-line="${l.id}" class="text-slate-400 hover:text-red-600">✕</button>` : ''}</td>
     </tr>`;
 }
@@ -700,7 +722,7 @@ function heatCellColor(value, max, metric) {
 }
 
 function heatmapHTML() {
-  const { entities, axisLabels } = heatmapData(state.heatmapMode, state.heatmapAxis, state.heatmapMetric);
+  const { entities, axisLabels } = heatmapData(state.heatmapMode, state.heatmapAxis, state.heatmapMetric, state.heatmapCause);
   const max = Math.max(1, ...entities.flatMap((e) => e.values));
   const top10 = entities.slice(0, 10);
 
@@ -718,10 +740,15 @@ function heatmapHTML() {
         <button data-hm="metric:cost" class="px-3 py-1.5 ${state.heatmapMetric === 'cost' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Theo chi phí</button>
         <button data-hm="metric:count" class="px-3 py-1.5 ${state.heatmapMetric === 'count' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Theo số lượt</button>
       </div>
+      <div class="flex text-xs rounded-md border border-slate-300 overflow-hidden">
+        <button data-hm="cause:ALL" class="px-3 py-1.5 ${state.heatmapCause === 'ALL' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Tất cả</button>
+        <button data-hm="cause:Cá nhân" class="px-3 py-1.5 ${state.heatmapCause === 'Cá nhân' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Cá nhân</button>
+        <button data-hm="cause:Hệ thống" class="px-3 py-1.5 ${state.heatmapCause === 'Hệ thống' ? 'bg-blue-900 text-white' : 'bg-white text-slate-600'}">Hệ thống</button>
+      </div>
     </div>
 
     <div class="bg-white border border-slate-200 rounded-lg p-4 mb-6 overflow-x-auto">
-      <h3 class="text-sm font-semibold text-slate-700 mb-3">Heatmap ${state.heatmapMode === 'department' ? 'Khoa' : 'Cá nhân'} × ${state.heatmapAxis === 'quarter' ? 'Quý' : 'Chuyên đề'} (${state.heatmapMetric === 'cost' ? 'chi phí' : 'số lượt'})</h3>
+      <h3 class="text-sm font-semibold text-slate-700 mb-3">Heatmap ${state.heatmapMode === 'department' ? 'Khoa' : 'Cá nhân'} × ${state.heatmapAxis === 'quarter' ? 'Quý' : 'Chuyên đề'} (${state.heatmapMetric === 'cost' ? 'chi phí' : 'số lượt'}${state.heatmapCause !== 'ALL' ? ' · nguyên nhân: ' + state.heatmapCause : ''})</h3>
       ${entities.length === 0 ? '<div class="text-sm text-slate-400 py-8 text-center">Chưa có dữ liệu</div>' : `
       <table class="text-xs border-collapse">
         <thead><tr>
@@ -1000,6 +1027,10 @@ function attachTabEvents() {
     if (bsEl) bsEl.onchange = (e) => { state.filterBacSi = e.target.value; renderTab(); };
     const nhomEl = document.getElementById('filter-nhom');
     if (nhomEl) nhomEl.onchange = (e) => { state.filterNhom = e.target.value; renderTab(); };
+    const causeEl = document.getElementById('filter-cause');
+    if (causeEl) causeEl.onchange = (e) => { state.filterCause = e.target.value; renderTab(); };
+    const remEl = document.getElementById('filter-remediator');
+    if (remEl) remEl.onchange = (e) => { state.filterRemediator = e.target.value; renderTab(); };
     document.querySelectorAll('[data-pareto-scope]').forEach((btn) => { btn.onclick = () => { state.paretoScope = btn.dataset.paretoScope; renderTab(); }; });
   }
   if (state.tab === 'details') {
@@ -1020,6 +1051,7 @@ function attachTabEvents() {
         if (key === 'mode') state.heatmapMode = val;
         if (key === 'axis') state.heatmapAxis = val;
         if (key === 'metric') state.heatmapMetric = val;
+        if (key === 'cause') state.heatmapCause = val;
         renderTab();
       };
     });
@@ -1073,7 +1105,7 @@ async function deleteLineRow(id) {
   renderTab();
 }
 async function addLineRow() {
-  const payload = { quarter: 'Q1', year: new Date().getFullYear(), individual: '', department: '', cost: 0, service: '', error_desc: '', code: '', cause: null };
+  const payload = { quarter: 'Q1', year: new Date().getFullYear(), individual: '', department: '', cost: 0, service: '', error_desc: '', code: '', cause: null, remediator: '' };
   const { data, error } = await sb.from('bhyt_lines').insert(payload).select().single();
   if (!error) { state.lines.push(data); renderTab(); }
 }
@@ -1173,6 +1205,7 @@ async function handleImport(e) {
         error_desc: String(r['Lỗi'] || '').trim(),
         code: String(r['Phụ lục'] || '').trim(),
         cause: String(r['Nguyên nhân'] || '').trim() || null,
+        remediator: String(r['Người khắc phục'] || r['Phụ trách khắc phục chính'] || '').trim(),
       }))
       .filter((r) => r.quarter && r.year);
 
@@ -1223,7 +1256,7 @@ function handleExport() {
   const wb = XLSX.utils.book_new();
   const lineSheet = XLSX.utils.json_to_sheet(state.lines.map((l) => ({
     'Quý': QUARTER_VN[l.quarter] || l.quarter, 'Năm': l.year, 'Họ tên người thực hiện/CĐ': l.individual,
-    'Khoa': l.department, 'Chi phí': l.cost, 'Dịch vụ': l.service, 'Lỗi': l.error_desc, 'Phụ lục': l.code, 'Nguyên nhân': l.cause,
+    'Khoa': l.department, 'Chi phí': l.cost, 'Dịch vụ': l.service, 'Lỗi': l.error_desc, 'Phụ lục': l.code, 'Nguyên nhân': l.cause, 'Người khắc phục': l.remediator,
   })));
   XLSX.utils.book_append_sheet(wb, lineSheet, 'Chi tiết xuất toán');
   const perSheet = XLSX.utils.json_to_sheet(state.periods.map((p) => ({ 'Quý': QUARTER_VN[p.quarter] || p.quarter, 'Năm': p.year, 'Doanh thu BHYT': p.revenue })));
